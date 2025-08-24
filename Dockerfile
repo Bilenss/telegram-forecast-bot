@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 COPY app/requirements.txt /app/app/requirements.txt
-RUN pip install --no-cache-dir -r app/requirements.txt  && python -m playwright install --with-deps chromium
+RUN pip install --no-cache-dir -r app/requirements.txt && python -m playwright install chromium
 
 COPY app /app/app
 
