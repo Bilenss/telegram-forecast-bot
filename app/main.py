@@ -24,6 +24,7 @@ MODE_INDI = "INDI"
 MARKET_FIN = "FIN"
 MARKET_OTC = "OTC"
 
+
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
 
@@ -60,12 +61,12 @@ async def get_series(pair: str, interval: str = None):
 
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
-        await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
 
     df, src = await get_series(pair, settings.timeframe)
-if df is None or df.empty:
-    await message.answer("Не удалось получить котировки для выбранной пары. Попробуйте другую или позже.")
-    return
+    if df is None or df.empty:
+        await message.answer("Не удалось получить котировки для выбранной пары. Попробуйте другую или позже.")
+        return
 
     # Подготовка индикаторов
     raw = df.copy()
@@ -81,11 +82,10 @@ if df is None or df.empty:
     chart_path = save_chart(df.tail(300), out_dir="/tmp/charts", title=f"{pair}_{settings.timeframe}")
 
     text = (
-    f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
-    f"📈 <b>Обоснование:</b> {expl or '—'}\n"
-    f"⏱️ Таймфрейм: {settings.timeframe}\n"
-    f"🧪 Источник: {src or ('PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)')}"
-)
+        f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
+        f"📈 <b>Обоснование:</b> {expl or '—'}\n"
+        f"⏱️ Таймфрейм: {settings.timeframe}\n"
+        f"🧪 Источник: {src or ('PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)')}"
     )
 
     if chart_path and os.path.exists(chart_path):
@@ -99,6 +99,7 @@ async def on_start(message: Message, state: FSMContext):
     await state.set_state(Dialog.choose_mode)
     await message.answer("Выберите тип анализа:", reply_markup=start_kb())
 
+
 async def on_choose_mode(message: Message, state: FSMContext):
     text = message.text.strip().lower()
     if "индик" in text:
@@ -107,6 +108,7 @@ async def on_choose_mode(message: Message, state: FSMContext):
         await state.update_data(mode=MODE_TECH)
     await state.set_state(Dialog.choose_market)
     await message.answer("Выберите тип актива:", reply_markup=market_kb())
+
 
 async def on_choose_market(message: Message, state: FSMContext):
     text = message.text.strip().lower()
@@ -118,6 +120,7 @@ async def on_choose_market(message: Message, state: FSMContext):
     market = data.get("market", MARKET_FIN)
     await state.set_state(Dialog.choose_pair)
     await message.answer("Выберите пару:", reply_markup=pairs_kb(market))
+
 
 async def on_choose_pair(message: Message, state: FSMContext):
     if message.text == "⬅️ Назад":
@@ -138,15 +141,17 @@ async def on_choose_pair(message: Message, state: FSMContext):
 
     try:
         await handle_forecast(message, state, mode, market, pair)
-    except Exception as e:
+    except Exception:
         logger.exception("Forecast error")
         await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
+
 
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
+
 
 async def main():
     token = settings.telegram_token
@@ -159,6 +164,7 @@ async def main():
 
     logger.info("Bot started")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
