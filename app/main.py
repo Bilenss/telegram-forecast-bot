@@ -15,7 +15,7 @@ from .utils.cache import cache
 from .utils.charts import save_chart
 from .analysis.indicators import enrich_indicators
 from .analysis.decision import decide_indicators, decide_technicals
-from .data_sources.fallback_quotes import fetch_yf_ohlc
+from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
 MODE_TECH = "TECH"
@@ -35,16 +35,20 @@ async def get_series(pair: str, interval: str = None):
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
 
-    # 2) Фолбэк: Yahoo Finance (тот же базовый инструмент) + понижение таймфрейма
-    if df is None:
+    # 2) Фолбэк: Yahoo Finance
+    if df is None or df.empty:
         yf_ticker = to_yf_ticker(pair)
         if yf_ticker:
             df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
-            # Если выбран минутный интервал и рынок закрыт — пробуем 15m и 1h
-            if (df is None or df.empty) and interval in {"1m", "2m", "5m"}:
+            # если минутки пустые — пробуем длиннее
+            if (df is None or df.empty) and interval in {"1m","2m","5m"}:
                 df = fetch_yf_ohlc(yf_ticker, interval="15m", lookback=600) or df
             if (df is None or df.empty):
                 df = fetch_yf_ohlc(yf_ticker, interval="1h", lookback=600) or df
+
+    # 3) Фолбэк: Alpha Vantage (если есть ключ)
+    if df is None or df.empty:
+        df = fetch_av_ohlc(pair, interval=interval, lookback=600)
 
     if df is None or df.empty:
         return None
