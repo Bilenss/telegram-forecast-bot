@@ -7,3 +7,4 @@ matplotlib==3.8.4
 cachetools==5.3.3
 loguru==0.7.2
 playwright==1.47.0
+requests==2.32.3
