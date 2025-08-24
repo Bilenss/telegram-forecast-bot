@@ -1,0 +1,9 @@
+aiogram==3.7.0
+pandas==2.2.2
+numpy==1.26.4
+pandas-ta==0.3.14b0
+yfinance==0.2.41
+matplotlib==3.8.4
+cachetools==5.3.3
+loguru==0.7.2
+playwright==1.47.0
