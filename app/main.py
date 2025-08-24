@@ -29,41 +29,43 @@ async def get_series(pair: str, interval: str = None):
 
     cache_key = ("series", pair, interval)
     if cache_key in cache:
-        return cache[cache_key]
+        return cache[cache_key], "cache"
 
     # 1) Попытка PocketOption (скрапинг)
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
+    if df is not None and not df.empty:
+        logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
+        cache[cache_key] = df
+        return df, "PocketOption (best-effort)"
 
     # 2) Фолбэк: Yahoo Finance
-    if df is None or df.empty:
-        yf_ticker = to_yf_ticker(pair)
-        if yf_ticker:
-            df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
-            # если минутки пустые — пробуем длиннее
-            if (df is None or df.empty) and interval in {"1m","2m","5m"}:
-                df = fetch_yf_ohlc(yf_ticker, interval="15m", lookback=600) or df
-            if (df is None or df.empty):
-                df = fetch_yf_ohlc(yf_ticker, interval="1h", lookback=600) or df
+    yf_ticker = to_yf_ticker(pair)
+    if yf_ticker:
+        df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
+        if df is not None and not df.empty:
+            logger.info(f"SOURCE=Yahoo pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
+            cache[cache_key] = df
+            return df, "Yahoo Finance"
 
-    # 3) Фолбэк: Alpha Vantage (если есть ключ)
-    if df is None or df.empty:
-        df = fetch_av_ohlc(pair, interval=interval, lookback=600)
+    # 3) Фолбэк: Alpha Vantage
+    df = fetch_av_ohlc(pair, interval=interval, lookback=600)
+    if df is not None and not df.empty:
+        logger.info(f"SOURCE=AlphaVantage pair={pair} interval={interval} rows={len(df)}")
+        cache[cache_key] = df
+        return df, "Alpha Vantage"
 
-    if df is None or df.empty:
-        return None
-
-    cache[cache_key] = df
-    return df
+    logger.warning(f"SOURCE=NONE pair={pair} interval={interval}")
+    return None, None
 
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
-    await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
 
-    df = await get_series(pair, settings.timeframe)
-    if df is None or df.empty:
-        await message.answer("Не удалось получить котировки для выбранной пары. Попробуйте другую или позже.")
-        return
+    df, src = await get_series(pair, settings.timeframe)
+if df is None or df.empty:
+    await message.answer("Не удалось получить котировки для выбранной пары. Попробуйте другую или позже.")
+    return
 
     # Подготовка индикаторов
     raw = df.copy()
@@ -79,10 +81,11 @@ async def handle_forecast(message: Message, state: FSMContext, mode: str, market
     chart_path = save_chart(df.tail(300), out_dir="/tmp/charts", title=f"{pair}_{settings.timeframe}")
 
     text = (
-        f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
-        f"📈 <b>Обоснование:</b> {expl or '—'}\n"
-        f"⏱️ Таймфрейм: {settings.timeframe}\n"
-        f"🧪 Источник: {'PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)'}"
+    f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
+    f"📈 <b>Обоснование:</b> {expl or '—'}\n"
+    f"⏱️ Таймфрейм: {settings.timeframe}\n"
+    f"🧪 Источник: {src or ('PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)')}"
+)
     )
 
     if chart_path and os.path.exists(chart_path):
