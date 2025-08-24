@@ -3,7 +3,7 @@ import asyncio
 import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 
 from .states import Dialog
@@ -76,7 +76,7 @@ async def get_series(pair: str, interval: str = None):
 
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
-       await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
 
     df, src, debug = await get_series(pair, settings.timeframe)
     if df is None or df.empty:
@@ -167,8 +167,6 @@ async def on_choose_pair(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
 
 
-from aiogram.filters import Command
-
 async def on_diag(message: Message):
     # Простая самодиагностика (без раскрытия секретов)
     has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
@@ -195,24 +193,4 @@ async def on_diag(message: Message):
 
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
-    dp.message.register(on_diag, Command("diag"))  # <-- добавили
-    dp.message.register(on_choose_mode, Dialog.choose_mode)
-    dp.message.register(on_choose_market, Dialog.choose_market)
-    dp.message.register(on_choose_pair, Dialog.choose_pair)
-
-
-async def main():
-    token = settings.telegram_token
-    if not token:
-        raise RuntimeError("TELEGRAM_TOKEN is not set")
-
-    bot = Bot(token)
-    dp = Dispatcher()
-    setup_router(dp)
-
-    logger.info("Bot started")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    dp.message.register(on
