@@ -27,45 +27,66 @@ MARKET_OTC = "OTC"
 
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
+    debug = []
 
     cache_key = ("series", pair, interval)
     if cache_key in cache:
-        return cache[cache_key], "cache"
+        debug.append("cache:hit")
+        return cache[cache_key], "cache", debug
+    else:
+        debug.append("cache:miss")
 
-    # 1) Попытка PocketOption (скрапинг)
+    # 1) PocketOption (скрапинг)
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
     if df is not None and not df.empty:
+        debug.append(f"po:rows={len(df)}")
         logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
         cache[cache_key] = df
-        return df, "PocketOption (best-effort)"
+        return df, "PocketOption (best-effort)", debug
+    else:
+        debug.append("po:none")
 
-    # 2) Фолбэк: Yahoo Finance
+    # 2) Yahoo Finance
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
+            debug.append(f"yf:{yf_ticker}:rows={len(df)}")
             logger.info(f"SOURCE=Yahoo pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
             cache[cache_key] = df
-            return df, "Yahoo Finance"
+            return df, "Yahoo Finance", debug
+        else:
+            debug.append(f"yf:{yf_ticker}:none")
+    else:
+        debug.append("yf:map:none")
 
-    # 3) Фолбэк: Alpha Vantage
+    # 3) Alpha Vantage
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
     if df is not None and not df.empty:
+        debug.append(f"av:rows={len(df)}")
         logger.info(f"SOURCE=AlphaVantage pair={pair} interval={interval} rows={len(df)}")
         cache[cache_key] = df
-        return df, "Alpha Vantage"
+        return df, "Alpha Vantage", debug
+    else:
+        debug.append("av:none")
 
     logger.warning(f"SOURCE=NONE pair={pair} interval={interval}")
-    return None, None
+    return None, None, debug
 
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
-    await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
+       await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
 
-    df, src = await get_series(pair, settings.timeframe)
+    df, src, debug = await get_series(pair, settings.timeframe)
     if df is None or df.empty:
-        await message.answer("Не удалось получить котировки для выбранной пары. Попробуйте другую или позже.")
+        # Покажем пользователю короткую диагностику без секретов
+        dbg = " | ".join(debug[-5:]) if debug else "n/a"
+        await message.answer(
+            "Не удалось получить котировки для выбранной пары.\n"
+            f"Диагностика: {dbg}\n"
+            "Попробуйте другую пару или позже."
+        )
         return
 
     # Подготовка индикаторов
@@ -146,8 +167,35 @@ async def on_choose_pair(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
 
 
+from aiogram.filters import Command
+
+async def on_diag(message: Message):
+    # Простая самодиагностика (без раскрытия секретов)
+    has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
+    timeframe = settings.timeframe
+    pair = "EUR/USD"
+
+    # Пробуем по очереди
+    df_po, src_po, _ = await get_series(pair, timeframe)  # это вызовет цепочку и кэш
+    # Чтобы не мешал кэш — отдельно проверим источники:
+    from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc
+    df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
+    df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
+
+    text = (
+        "<b>Диагностика</b>\n"
+        f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
+        f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
+        f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
+        f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
+        "Примечание: значения >0 означают, что источник отдаёт бары.\n"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
+    dp.message.register(on_diag, Command("diag"))  # <-- добавили
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
