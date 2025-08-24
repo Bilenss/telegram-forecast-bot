@@ -35,13 +35,18 @@ async def get_series(pair: str, interval: str = None):
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
 
-    # 2) Фолбэк: Yahoo Finance (тот же базовый инструмент)
+    # 2) Фолбэк: Yahoo Finance (тот же базовый инструмент) + понижение таймфрейма
     if df is None:
         yf_ticker = to_yf_ticker(pair)
         if yf_ticker:
             df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
+            # Если выбран минутный интервал и рынок закрыт — пробуем 15m и 1h
+            if (df is None or df.empty) and interval in {"1m", "2m", "5m"}:
+                df = fetch_yf_ohlc(yf_ticker, interval="15m", lookback=600) or df
+            if (df is None or df.empty):
+                df = fetch_yf_ohlc(yf_ticker, interval="1h", lookback=600) or df
 
-    if df is None:
+    if df is None or df.empty:
         return None
 
     cache[cache_key] = df
