@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import os
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -27,7 +27,7 @@ MARKET_OTC = "OTC"
 
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
-    debug = []
+    debug: list[str] = []
 
     cache_key = ("series", pair, interval)
     if cache_key in cache:
@@ -36,7 +36,7 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-    # 1) PocketOption (скрапинг)
+    # 1) PocketOption (скрапинг — best-effort)
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
     if df is not None and not df.empty:
@@ -80,7 +80,6 @@ async def handle_forecast(message: Message, state: FSMContext, mode: str, market
 
     df, src, debug = await get_series(pair, settings.timeframe)
     if df is None or df.empty:
-        # Покажем пользователю короткую диагностику без секретов
         dbg = " | ".join(debug[-5:]) if debug else "n/a"
         await message.answer(
             "Не удалось получить котировки для выбранной пары.\n"
@@ -154,7 +153,6 @@ async def on_choose_pair(message: Message, state: FSMContext):
     market = data.get("market", MARKET_FIN)
     pair = message.text.strip()
 
-    # Простая валидация пары
     allowed = (ACTIVE_FIN if market == MARKET_FIN else ACTIVE_OTC)
     if pair not in allowed:
         await message.answer("Пожалуйста, выберите пару с клавиатуры.")
@@ -173,10 +171,8 @@ async def on_diag(message: Message):
     timeframe = settings.timeframe
     pair = "EUR/USD"
 
-    # Пробуем по очереди
-    df_po, src_po, _ = await get_series(pair, timeframe)  # это вызовет цепочку и кэш
-    # Чтобы не мешал кэш — отдельно проверим источники:
-    from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc
+    # Три быстрых прогона источников
+    _df, _src, _dbg = await get_series(pair, timeframe)  # прогреваем кэш/цепочку
     df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
     df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
 
@@ -193,4 +189,24 @@ async def on_diag(message: Message):
 
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
-    dp.message.register(on
+    dp.message.register(on_diag, Command("diag"))
+    dp.message.register(on_choose_mode, Dialog.choose_mode)
+    dp.message.register(on_choose_market, Dialog.choose_market)
+    dp.message.register(on_choose_pair, Dialog.choose_pair)
+
+
+async def main():
+    token = settings.telegram_token
+    if not token:
+        raise RuntimeError("TELEGRAM_TOKEN is not set")
+
+    bot = Bot(token)
+    dp = Dispatcher()
+    setup_router(dp)
+
+    logger.info("Bot started")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
