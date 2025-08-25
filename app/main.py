@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import os
+import requests  # ✅ добавлен импорт для /net
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import CommandStart, Command
@@ -18,7 +19,8 @@ from .analysis.decision import decide_indicators, decide_technicals
 from .data_sources.fallback_quotes import (
     fetch_yf_ohlc,
     fetch_av_ohlc,
-    fetch_yahoo_direct_ohlc  # ✅ добавлено
+    fetch_yahoo_direct_ohlc,
+    get_last_notes  # ✅ добавлено
 )
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
@@ -40,7 +42,7 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-    # 1) PocketOption (скрапинг)
+    # 1) PocketOption
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
     if df is not None and not df.empty:
@@ -51,7 +53,7 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("po:none")
 
-    # 2) Yahoo Finance (через yfinance)
+    # 2) Yahoo Finance (yfinance)
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
@@ -63,7 +65,8 @@ async def get_series(pair: str, interval: str = None):
         else:
             debug.append(f"yf:{yf_ticker}:none")
 
-        # 2b) Прямой Yahoo Chart API (без yfinance)
+    # 2b) Прямой Yahoo Chart API
+    if yf_ticker:
         df = fetch_yahoo_direct_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
             debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
@@ -72,8 +75,6 @@ async def get_series(pair: str, interval: str = None):
             return df, "Yahoo Finance (direct)", debug
         else:
             debug.append(f"yhd:{yf_ticker}:none")
-    else:
-        debug.append("yf:map:none")
 
     # 3) Alpha Vantage
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
@@ -187,6 +188,7 @@ async def on_diag(message: Message):
     df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
     df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
     df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
+    notes = get_last_notes()
 
     text = (
         "<b>Диагностика</b>\n"
@@ -195,14 +197,41 @@ async def on_diag(message: Message):
         f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
         f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
         f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
+        f"Notes: <code>{notes}</code>\n"
         "Примечание: значения >0 означают, что источник отдаёт бары.\n"
     )
     await message.answer(text, parse_mode="HTML")
 
 
+async def on_net(message: Message):
+    try:
+        r = requests.get("https://api.ipify.org?format=json", timeout=10)
+        await message.answer(f"NET OK: <code>{r.text}</code>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"NET ERROR: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+
+
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
+    dp.message.register(on_diag, Command("diag"))
+    dp.message.register(on_net, Command("net"))  # ✅ добавлено
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
-    dp.message.register(on_diag, Command("diag"))
+
+
+async def main():
+    token = settings.telegram_token
+    if not token:
+        raise RuntimeError("TELEGRAM_TOKEN is not set")
+
+    bot = Bot(token)
+    dp = Dispatcher()
+    setup_router(dp)
+
+    logger.info("Bot started")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
