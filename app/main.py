@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import os
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -15,7 +15,11 @@ from .utils.cache import cache
 from .utils.charts import save_chart
 from .analysis.indicators import enrich_indicators
 from .analysis.decision import decide_indicators, decide_technicals
-from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc
+from .data_sources.fallback_quotes import (
+    fetch_yf_ohlc,
+    fetch_av_ohlc,
+    fetch_yahoo_direct_ohlc  # ✅ добавлено
+)
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
 MODE_TECH = "TECH"
@@ -27,7 +31,7 @@ MARKET_OTC = "OTC"
 
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
-    debug: list[str] = []
+    debug = []
 
     cache_key = ("series", pair, interval)
     if cache_key in cache:
@@ -36,7 +40,7 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-    # 1) PocketOption (скрапинг — best-effort)
+    # 1) PocketOption (скрапинг)
     pair_slug = pair.replace(" ", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
     if df is not None and not df.empty:
@@ -47,17 +51,27 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("po:none")
 
-    # 2) Yahoo Finance
+    # 2) Yahoo Finance (через yfinance)
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
             debug.append(f"yf:{yf_ticker}:rows={len(df)}")
-            logger.info(f"SOURCE=Yahoo pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
+            logger.info(f"SOURCE=Yahoo(yfinance) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
             cache[cache_key] = df
-            return df, "Yahoo Finance", debug
+            return df, "Yahoo Finance (yfinance)", debug
         else:
             debug.append(f"yf:{yf_ticker}:none")
+
+        # 2b) Прямой Yahoo Chart API (без yfinance)
+        df = fetch_yahoo_direct_ohlc(yf_ticker, interval=interval, lookback=600)
+        if df is not None and not df.empty:
+            debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
+            logger.info(f"SOURCE=Yahoo(chart) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
+            cache[cache_key] = df
+            return df, "Yahoo Finance (direct)", debug
+        else:
+            debug.append(f"yhd:{yf_ticker}:none")
     else:
         debug.append("yf:map:none")
 
@@ -88,17 +102,14 @@ async def handle_forecast(message: Message, state: FSMContext, mode: str, market
         )
         return
 
-    # Подготовка индикаторов
     raw = df.copy()
     df = enrich_indicators(raw)
 
-    # Решение
     if mode == MODE_INDI:
         decision, expl = decide_indicators(df)
     else:
         decision, expl = decide_technicals(df)
 
-    # График
     chart_path = save_chart(df.tail(300), out_dir="/tmp/charts", title=f"{pair}_{settings.timeframe}")
 
     text = (
@@ -166,14 +177,15 @@ async def on_choose_pair(message: Message, state: FSMContext):
 
 
 async def on_diag(message: Message):
-    # Простая самодиагностика (без раскрытия секретов)
     has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
     timeframe = settings.timeframe
     pair = "EUR/USD"
 
-    # Три быстрых прогона источников
-    _df, _src, _dbg = await get_series(pair, timeframe)  # прогреваем кэш/цепочку
+    df_po, src_po, _ = await get_series(pair, timeframe)
+
+    from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc, fetch_yahoo_direct_ohlc
     df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
+    df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
     df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
 
     text = (
@@ -181,6 +193,7 @@ async def on_diag(message: Message):
         f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
         f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
         f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
+        f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
         f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
         "Примечание: значения >0 означают, что источник отдаёт бары.\n"
     )
@@ -189,24 +202,7 @@ async def on_diag(message: Message):
 
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
-    dp.message.register(on_diag, Command("diag"))
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
-
-
-async def main():
-    token = settings.telegram_token
-    if not token:
-        raise RuntimeError("TELEGRAM_TOKEN is not set")
-
-    bot = Bot(token)
-    dp = Dispatcher()
-    setup_router(dp)
-
-    logger.info("Bot started")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    dp.message.register(on_diag, Command("diag"))
