@@ -178,29 +178,33 @@ async def on_choose_pair(message: Message, state: FSMContext):
 
 
 async def on_diag(message: Message):
-    has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
-    timeframe = settings.timeframe
-    pair = "EUR/USD"
+    try:
+        has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
+        timeframe = settings.timeframe
+        pair = "EUR/USD"
 
-    df_po, src_po, _ = await get_series(pair, timeframe)
+        # Прогоняем цепочку (это прогреет кэш и заодно проверит все источники)
+        _df, _src, _dbg = await get_series(pair, timeframe)
 
-    from .data_sources.fallback_quotes import fetch_yf_ohlc, fetch_av_ohlc, fetch_yahoo_direct_ohlc
-    df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-    df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-    df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
-    notes = get_last_notes()
+        # Прямые проверки каждого источника
+        df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
+        df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
+        df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
+        notes = get_last_notes()
 
-    text = (
-        "<b>Диагностика</b>\n"
-        f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
-        f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
-        f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
-        f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
-        f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
-        f"Notes: <code>{notes}</code>\n"
-        "Примечание: значения >0 означают, что источник отдаёт бары.\n"
-    )
-    await message.answer(text, parse_mode="HTML")
+        text = (
+            "<b>Диагностика</b>\n"
+            f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
+            f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
+            f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
+            f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
+            f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
+            f"Notes: <code>{notes}</code>\n"
+            "Примечание: значения >0 означают, что источник отдаёт бары.\n"
+        )
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"Diag error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
 
 
 async def on_net(message: Message):
