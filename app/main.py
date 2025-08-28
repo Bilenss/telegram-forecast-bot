@@ -1,8 +1,8 @@
 from __future__ import annotations
 import asyncio
 import os
-import requests  # ✅ добавлен импорт для /net
-from aiogram import Bot, Dispatcher, F
+import requests  # для /net
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -20,7 +20,7 @@ from .data_sources.fallback_quotes import (
     fetch_yf_ohlc,
     fetch_av_ohlc,
     fetch_yahoo_direct_ohlc,
-    get_last_notes  # ✅ добавлено
+    get_last_notes,
 )
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
@@ -33,7 +33,7 @@ MARKET_OTC = "OTC"
 
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
-    debug = []
+    debug: list[str] = []
 
     cache_key = ("series", pair, interval)
     if cache_key in cache:
@@ -42,18 +42,25 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-    # 1) PocketOption
-   pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
-    df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
-    if df is not None and not df.empty:
-        debug.append(f"po:rows={len(df)}")
-        logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
-        cache[cache_key] = df
-        return df, "PocketOption (best-effort)", debug
+    # 1) PocketOption (best-effort) — только если включено переменной окружения
+    if settings.po_enable_scrape:
+        pair_slug = (
+            pair.replace(" ", "_")
+                .replace("/", "_")
+                .lower()
+        )  # например "EUR/USD OTC" -> "eur_usd_otc"
+        df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
+        if df is not None and not df.empty:
+            debug.append(f"po:rows={len(df)}")
+            logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
+            cache[cache_key] = df
+            return df, "PocketOption (best-effort)", debug
+        else:
+            debug.append("po:none")
     else:
-        debug.append("po:none")
+        debug.append("po:off")
 
-    # 2) Yahoo Finance (yfinance)
+    # 2) Yahoo Finance через yfinance
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
@@ -65,8 +72,7 @@ async def get_series(pair: str, interval: str = None):
         else:
             debug.append(f"yf:{yf_ticker}:none")
 
-    # 2b) Прямой Yahoo Chart API
-    if yf_ticker:
+        # 2b) Прямой Yahoo Chart API (часто работает там, где yfinance пусто)
         df = fetch_yahoo_direct_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
             debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
@@ -75,8 +81,10 @@ async def get_series(pair: str, interval: str = None):
             return df, "Yahoo Finance (direct)", debug
         else:
             debug.append(f"yhd:{yf_ticker}:none")
+    else:
+        debug.append("yf:map:none")
 
-    # 3) Alpha Vantage
+    # 3) Alpha Vantage (если ключ задан)
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
     if df is not None and not df.empty:
         debug.append(f"av:rows={len(df)}")
@@ -181,12 +189,8 @@ async def on_diag(message: Message):
     try:
         has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
         timeframe = settings.timeframe
-        pair = "EUR/USD"
 
-        # Прогоняем цепочку (это прогреет кэш и заодно проверит все источники)
-        _df, _src, _dbg = await get_series(pair, timeframe)
-
-        # Прямые проверки каждого источника
+        _df, _src, _dbg = await get_series("EUR/USD", timeframe)
         df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
@@ -218,7 +222,7 @@ async def on_net(message: Message):
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_diag, Command("diag"))
-    dp.message.register(on_net, Command("net"))  # ✅ добавлено
+    dp.message.register(on_net, Command("net"))
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
