@@ -42,13 +42,15 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-    # 1) PocketOption (best-effort) — только если включено переменной окружения
-    if settings.po_enable_scrape:
+        # 1) PocketOption (best-effort) — только если включено переменной окружения
+    po_flag = settings.po_enable_scrape
+    if po_flag:
         pair_slug = (
             pair.replace(" ", "_")
                 .replace("/", "_")
                 .lower()
-        )  # например "EUR/USD OTC" -> "eur_usd_otc"
+        )  # "EUR/USD OTC" -> "eur_usd_otc"
+        logger.info(f"PO try slug={pair_slug} interval={interval}")
         df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
         if df is not None and not df.empty:
             debug.append(f"po:rows={len(df)}")
@@ -189,8 +191,15 @@ async def on_diag(message: Message):
     try:
         has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
         timeframe = settings.timeframe
+        po_flag = settings.po_enable_scrape
+        test_pair = "EUR/USD OTC"
+        test_slug = (
+            test_pair.replace(" ", "_")
+                     .replace("/", "_")
+                     .lower()
+        )
 
-        _df, _src, _dbg = await get_series("EUR/USD", timeframe)
+        _df, _src, _dbg = await get_series("EUR/USD", timeframe)  # прогоняем цепочку и кэш
         df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
@@ -199,6 +208,8 @@ async def on_diag(message: Message):
         text = (
             "<b>Диагностика</b>\n"
             f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
+            f"PO_ENABLE_SCRAPE: <code>{'on' if po_flag else 'off'}</code>\n"
+            f"PO test slug: <code>{test_slug}</code>\n"
             f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
             f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
             f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
