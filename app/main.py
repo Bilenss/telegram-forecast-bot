@@ -42,14 +42,13 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
-        # 1) PocketOption (best-effort) — только если включено переменной окружения
     po_flag = settings.po_enable_scrape
     if po_flag:
         pair_slug = (
             pair.replace(" ", "_")
                 .replace("/", "_")
                 .lower()
-        )  # "EUR/USD OTC" -> "eur_usd_otc"
+        )
         logger.info(f"PO try slug={pair_slug} interval={interval}")
         df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
         if df is not None and not df.empty:
@@ -62,7 +61,6 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("po:off")
 
-    # 2) Yahoo Finance через yfinance
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
@@ -74,7 +72,6 @@ async def get_series(pair: str, interval: str = None):
         else:
             debug.append(f"yf:{yf_ticker}:none")
 
-        # 2b) Прямой Yahoo Chart API (часто работает там, где yfinance пусто)
         df = fetch_yahoo_direct_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
             debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
@@ -86,7 +83,6 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("yf:map:none")
 
-    # 3) Alpha Vantage (если ключ задан)
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
     if df is not None and not df.empty:
         debug.append(f"av:rows={len(df)}")
@@ -199,7 +195,7 @@ async def on_diag(message: Message):
                      .lower()
         )
 
-        _df, _src, _dbg = await get_series("EUR/USD", timeframe)  # прогоняем цепочку и кэш
+        _df, _src, _dbg = await get_series("EUR/USD", timeframe)
         df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
@@ -230,10 +226,21 @@ async def on_net(message: Message):
         await message.answer(f"NET ERROR: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
 
 
+# 🔧 Новый обработчик команды /env
+async def on_env(message: Message):
+    await message.answer(
+        "PO_ENABLE_SCRAPE env: <code>{}</code>\nsettings.po_enable_scrape: <code>{}</code>".format(
+            os.getenv("PO_ENABLE_SCRAPE"), settings.po_enable_scrape
+        ),
+        parse_mode="HTML",
+    )
+
+
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_diag, Command("diag"))
     dp.message.register(on_net, Command("net"))
+    dp.message.register(on_env, Command("env"))  # 👈 Регистрируем новую команду
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
@@ -248,6 +255,8 @@ async def main():
     dp = Dispatcher()
     setup_router(dp)
 
+    # 👇 Логгируем значения переменной окружения и настройки
+    logger.info(f"ENV PO_ENABLE_SCRAPE={os.getenv('PO_ENABLE_SCRAPE')} settings.po_enable_scrape={settings.po_enable_scrape}")
     logger.info("Bot started")
     await dp.start_polling(bot)
 
