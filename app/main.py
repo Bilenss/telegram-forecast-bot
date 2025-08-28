@@ -43,7 +43,7 @@ async def get_series(pair: str, interval: str = None):
         debug.append("cache:miss")
 
     # 1) PocketOption
-    pair_slug = pair.replace(" ", "_").lower()
+   pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
     df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
     if df is not None and not df.empty:
         debug.append(f"po:rows={len(df)}")
