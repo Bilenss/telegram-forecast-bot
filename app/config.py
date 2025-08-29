@@ -15,7 +15,7 @@ class Settings:
     cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "60"))
     po_enable_scrape: bool = _parse_bool(os.getenv("PO_ENABLE_SCRAPE"), False)
 
-    # ✅ безопасные (необязательные) поля прокси
+    # безопасные (могут быть None)
     http_proxy: str | None = os.getenv("HTTP_PROXY") or None
     https_proxy: str | None = os.getenv("HTTPS_PROXY") or None
 
