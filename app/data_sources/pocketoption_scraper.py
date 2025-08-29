@@ -1,9 +1,10 @@
-from __future__ import annotations
+from __future__ import annotations 
 import asyncio
 import json
 import re
 from contextlib import asynccontextmanager
 from typing import Optional
+from urllib.parse import urlparse
 
 import pandas as pd
 from playwright.async_api import async_playwright
@@ -19,13 +20,25 @@ from ..config import settings
 @asynccontextmanager
 async def _browser():
     ua = random_ua()
-    proxy_server = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
+
+    proxy_cfg = None
+    raw = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
+    if raw:
+        u = urlparse(raw)
+        # Собираем server без учётных данных
+        server = f"{u.scheme}://{u.hostname}:{u.port}"
+        proxy_cfg = {"server": server}
+        if u.username:
+            proxy_cfg["username"] = u.username
+        if u.password:
+            proxy_cfg["password"] = u.password
+
     launch_kwargs = {
         "headless": True,
         "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
     }
-    if proxy_server:
-        launch_kwargs["proxy"] = {"server": proxy_server}
+    if proxy_cfg:
+        launch_kwargs["proxy"] = proxy_cfg
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(**launch_kwargs)
