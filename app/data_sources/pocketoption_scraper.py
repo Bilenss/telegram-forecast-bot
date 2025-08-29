@@ -1,4 +1,4 @@
-from __future__ import annotations 
+from __future__ import annotations
 import asyncio
 import json
 import re
@@ -18,17 +18,20 @@ from ..config import settings
 
 @asynccontextmanager
 async def _browser():
-    proxy_server = (
-        getattr(settings, "https_proxy", None) or 
-        getattr(settings, "http_proxy", None)
-    )
-    proxy = {"server": proxy_server} if proxy_server else None
+    ua = random_ua()
+    proxy_server = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
+    launch_kwargs = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+    }
+    if proxy_server:
+        launch_kwargs["proxy"] = {"server": proxy_server}
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
-            user_agent=random_ua(),
-            proxy=proxy,
+            user_agent=ua,
+            viewport={"width": 1366, "height": 768}
         )
         page = await context.new_page()
         try:
@@ -42,7 +45,7 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
     if not settings.po_enable_scrape:
         return None
 
-    url = "https://pocketoption.com/ru/"  # публичная страница; при необходимости замените на конкретную страницу графика/символа
+    url = "https://pocketoption.com/ru/"  # публичная страница
 
     async with _browser() as page:
         await page.route("**/*", lambda route: route.continue_())
@@ -55,14 +58,13 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
         html = await page.content()
 
         # Грубый поиск JSON с candles внутри исходника
-        m = re.search(r"\{[^{}]*\"candles\"\s*:\s*\[.*?\]\} ", html, flags=re.DOTALL)
+        m = re.search(r"\{[^{}]*\"candles\"\s*:\s*\[.*?\]\}", html, flags=re.DOTALL)
         if m:
             try:
                 blob = json.loads(m.group(0))
                 candles = blob.get("candles")
                 if candles:
                     df = pd.DataFrame(candles)[-lookback:]
-                    # ожидаем ключи: time, open, high, low, close, volume
                     cols = {c: c for c in ["open", "high", "low", "close", "volume"] if c in df.columns}
                     if "time" in df.columns and cols:
                         df = df.rename(columns=cols).set_index(pd.to_datetime(df["time"], unit="s"))
