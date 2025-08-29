@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations 
 import asyncio
 import json
 import re
@@ -18,11 +18,17 @@ from ..config import settings
 
 @asynccontextmanager
 async def _browser():
+    proxy_server = (
+        getattr(settings, "https_proxy", None) or 
+        getattr(settings, "http_proxy", None)
+    )
+    proxy = {"server": proxy_server} if proxy_server else None
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             user_agent=random_ua(),
-            proxy={"server": settings.https_proxy or settings.http_proxy} if (settings.http_proxy or settings.https_proxy) else None,
+            proxy=proxy,
         )
         page = await context.new_page()
         try:
@@ -57,11 +63,11 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
                 if candles:
                     df = pd.DataFrame(candles)[-lookback:]
                     # ожидаем ключи: time, open, high, low, close, volume
-                    cols = {c: c for c in ["open","high","low","close","volume"] if c in df.columns}
-                    if "time" in df.columns:
+                    cols = {c: c for c in ["open", "high", "low", "close", "volume"] if c in df.columns}
+                    if "time" in df.columns and cols:
                         df = df.rename(columns=cols).set_index(pd.to_datetime(df["time"], unit="s"))
                         df.index.name = "time"
-                        return df[["open","high","low","close","volume"]]
+                        return df[["open", "high", "low", "close", "volume"]]
             except Exception:
                 pass
 
