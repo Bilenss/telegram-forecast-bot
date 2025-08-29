@@ -280,6 +280,9 @@ async def main():
     dp = Dispatcher()
     setup_router(dp)
 
+    logger.info(f"ENV HTTP_PROXY={os.getenv('HTTP_PROXY')} HTTPS_PROXY={os.getenv('HTTPS_PROXY')} "
+            f"settings.http={getattr(settings,'http_proxy',None)} settings.https={getattr(settings,'https_proxy',None)}")
+
     logger.info(f"ENV PO_ENABLE_SCRAPE={os.getenv('PO_ENABLE_SCRAPE')} settings.po_enable_scrape={settings.po_enable_scrape}")
     logger.info("Bot started")
     await dp.start_polling(bot)
