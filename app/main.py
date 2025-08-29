@@ -42,22 +42,27 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("cache:miss")
 
+    # 1) PocketOption (best-effort) — только если включено переменной окружения
     po_flag = settings.po_enable_scrape
     if po_flag:
-        pair_slug = (
-            pair.replace(" ", "_")
-                .replace("/", "_")
-                .lower()
-        )
-        logger.info(f"PO try slug={pair_slug} interval={interval}")
-        df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
-        if df is not None and not df.empty:
-            debug.append(f"po:rows={len(df)}")
-            logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
-            cache[cache_key] = df
-            return df, "PocketOption (best-effort)", debug
-        else:
-            debug.append("po:none")
+        try:
+            pair_slug = (
+                pair.replace(" ", "_")
+                    .replace("/", "_")
+                    .lower()
+            )  # "EUR/USD OTC" -> "eur_usd_otc"
+            logger.info(f"PO try slug={pair_slug} interval={interval}")
+            df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
+            if df is not None and not df.empty:
+                debug.append(f"po:rows={len(df)}")
+                logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
+                cache[cache_key] = df
+                return df, "PocketOption (best-effort)", debug
+            else:
+                debug.append("po:none")
+        except Exception as e:
+            logger.exception("PO scrape error")
+            debug.append(f"po:error:{type(e).__name__}")
     else:
         debug.append("po:off")
 
@@ -226,7 +231,6 @@ async def on_net(message: Message):
         await message.answer(f"NET ERROR: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
 
 
-# 🔧 Новый обработчик команды /env
 async def on_env(message: Message):
     await message.answer(
         "PO_ENABLE_SCRAPE env: <code>{}</code>\nsettings.po_enable_scrape: <code>{}</code>".format(
@@ -240,7 +244,7 @@ def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_diag, Command("diag"))
     dp.message.register(on_net, Command("net"))
-    dp.message.register(on_env, Command("env"))  # 👈 Регистрируем новую команду
+    dp.message.register(on_env, Command("env"))
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
@@ -255,7 +259,6 @@ async def main():
     dp = Dispatcher()
     setup_router(dp)
 
-    # 👇 Логгируем значения переменной окружения и настройки
     logger.info(f"ENV PO_ENABLE_SCRAPE={os.getenv('PO_ENABLE_SCRAPE')} settings.po_enable_scrape={settings.po_enable_scrape}")
     logger.info("Bot started")
     await dp.start_polling(bot)
