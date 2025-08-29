@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations 
 import asyncio
 import os
 import requests  # для /net
@@ -24,6 +24,8 @@ from .data_sources.fallback_quotes import (
 )
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
+LAST_SOURCE: dict[tuple, str] = {}
+
 MODE_TECH = "TECH"
 MODE_INDI = "INDI"
 
@@ -35,29 +37,30 @@ async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
     debug: list[str] = []
 
+    want_po_first = settings.po_enable_scrape and ("otc" in pair.lower())
     cache_key = ("series", pair, interval)
-    if cache_key in cache:
-        debug.append("cache:hit")
-        return cache[cache_key], "cache", debug
-    else:
-        debug.append("cache:miss")
 
-    # 1) PocketOption (best-effort) — только если включено переменной окружения
-    po_flag = settings.po_enable_scrape
-    if po_flag:
+    if cache_key in cache and not want_po_first:
+        debug.append("cache:hit")
+        src_label = LAST_SOURCE.get(cache_key, "cache")
+        return cache[cache_key], f"{src_label} (cache)", debug
+    else:
+        if cache_key in cache and want_po_first:
+            debug.append("cache:skip_po_first")
+        else:
+            debug.append("cache:miss")
+
+    if settings.po_enable_scrape:
         try:
-            pair_slug = (
-                pair.replace(" ", "_")
-                    .replace("/", "_")
-                    .lower()
-            )  # "EUR/USD OTC" -> "eur_usd_otc"
+            pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
             logger.info(f"PO try slug={pair_slug} interval={interval}")
             df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
             if df is not None and not df.empty:
                 debug.append(f"po:rows={len(df)}")
                 logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
                 cache[cache_key] = df
-                return df, "PocketOption (best-effort)", debug
+                LAST_SOURCE[cache_key] = "PocketOption (best-effort)"
+                return df, LAST_SOURCE[cache_key], debug
             else:
                 debug.append("po:none")
         except Exception as e:
@@ -66,6 +69,11 @@ async def get_series(pair: str, interval: str = None):
     else:
         debug.append("po:off")
 
+    if cache_key in cache:
+        debug.append("cache:use_fallback")
+        src_label = LAST_SOURCE.get(cache_key, "cache")
+        return cache[cache_key], f"{src_label} (cache)", debug
+
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
@@ -73,7 +81,8 @@ async def get_series(pair: str, interval: str = None):
             debug.append(f"yf:{yf_ticker}:rows={len(df)}")
             logger.info(f"SOURCE=Yahoo(yfinance) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
             cache[cache_key] = df
-            return df, "Yahoo Finance (yfinance)", debug
+            LAST_SOURCE[cache_key] = "Yahoo Finance (yfinance)"
+            return df, LAST_SOURCE[cache_key], debug
         else:
             debug.append(f"yf:{yf_ticker}:none")
 
@@ -82,7 +91,8 @@ async def get_series(pair: str, interval: str = None):
             debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
             logger.info(f"SOURCE=Yahoo(chart) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
             cache[cache_key] = df
-            return df, "Yahoo Finance (direct)", debug
+            LAST_SOURCE[cache_key] = "Yahoo Finance (direct)"
+            return df, LAST_SOURCE[cache_key], debug
         else:
             debug.append(f"yhd:{yf_ticker}:none")
     else:
@@ -93,7 +103,8 @@ async def get_series(pair: str, interval: str = None):
         debug.append(f"av:rows={len(df)}")
         logger.info(f"SOURCE=AlphaVantage pair={pair} interval={interval} rows={len(df)}")
         cache[cache_key] = df
-        return df, "Alpha Vantage", debug
+        LAST_SOURCE[cache_key] = "Alpha Vantage"
+        return df, LAST_SOURCE[cache_key], debug
     else:
         debug.append("av:none")
 
@@ -240,11 +251,21 @@ async def on_env(message: Message):
     )
 
 
+async def on_flush(message: Message):
+    try:
+        cache.clear()
+        LAST_SOURCE.clear()
+        await message.answer("Кэш очищен ✅")
+    except Exception as e:
+        await message.answer(f"Flush error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+
+
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_diag, Command("diag"))
     dp.message.register(on_net, Command("net"))
     dp.message.register(on_env, Command("env"))
+    dp.message.register(on_flush, Command("flush"))
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
