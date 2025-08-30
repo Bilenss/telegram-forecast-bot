@@ -114,34 +114,28 @@ async def get_series(pair: str, interval: str = None):
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
     await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
-
     df, src, debug = await get_series(pair, settings.timeframe)
     if df is None or df.empty:
         dbg = " | ".join(debug[-5:]) if debug else "n/a"
         await message.answer(
-            "Не удалось получить котировки для выбранной пары.\n"
+            f"Не удалось получить котировки для пары {pair}.\n"
             f"Диагностика: {dbg}\n"
-            "Попробуйте другую пару или позже."
+            "Попробуйте другую пару или повторите попытку позже."
         )
         return
-
     raw = df.copy()
     df = enrich_indicators(raw)
-
     if mode == MODE_INDI:
         decision, expl = decide_indicators(df)
     else:
         decision, expl = decide_technicals(df)
-
     chart_path = save_chart(df.tail(300), out_dir="/tmp/charts", title=f"{pair}_{settings.timeframe}")
-
     text = (
         f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
         f"📈 <b>Обоснование:</b> {expl or '—'}\n"
         f"⏱️ Таймфрейм: {settings.timeframe}\n"
         f"🧪 Источник: {src or ('PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)')}"
     )
-
     if chart_path and os.path.exists(chart_path):
         await message.answer_photo(photo=FSInputFile(chart_path), caption=text, parse_mode="HTML")
     else:
