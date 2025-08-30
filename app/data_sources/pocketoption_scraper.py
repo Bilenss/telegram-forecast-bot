@@ -5,7 +5,6 @@ import re
 from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import urlparse
-
 import pandas as pd
 from playwright.async_api import async_playwright
 from ..utils.user_agents import random_ua
@@ -21,11 +20,11 @@ from ..config import settings
 async def _browser():
     ua = random_ua()
 
-    proxy_cfg = None
+    # --- аккуратный парсинг прокси ---
     raw = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
+    proxy_cfg = None
     if raw:
         u = urlparse(raw)
-        # Собираем server без учётных данных
         server = f"{u.scheme}://{u.hostname}:{u.port}"
         proxy_cfg = {"server": server}
         if u.username:
@@ -33,19 +32,25 @@ async def _browser():
         if u.password:
             proxy_cfg["password"] = u.password
 
-    launch_kwargs = {
-        "headless": True,
-        "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-    }
-    if proxy_cfg:
-        launch_kwargs["proxy"] = proxy_cfg
-
     async with async_playwright() as p:
+        launch_kwargs = {
+            "headless": True,
+            "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+        }
+        if proxy_cfg:
+            launch_kwargs["proxy"] = proxy_cfg
+
+        # Создание браузера
         browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=ua,
-            viewport={"width": 1366, "height": 768}
+            locale="ru-RU",  # Устанавливаем локаль для русскоязычного интерфейса
+            viewport={"width": 1366, "height": 768},
         )
+        # Увеличиваем таймауты
+        context.set_default_timeout(60000)  # Таймаут по умолчанию для всех операций
+        context.set_default_navigation_timeout(90000)  # Таймаут для навигации
+
         page = await context.new_page()
         try:
             yield page
