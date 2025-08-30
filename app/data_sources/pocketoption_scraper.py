@@ -9,6 +9,7 @@ import pandas as pd
 from playwright.async_api import async_playwright
 from ..utils.user_agents import random_ua
 from ..config import settings
+from ..utils.logging import logger  # Предполагаю, что у тебя уже есть настроенный logger
 
 # ВНИМАНИЕ: Структура DOM/скриптов на pocketoption.com может меняться.
 # Этот скрапер реализует "best-effort" стратегию:
@@ -24,13 +25,17 @@ async def _browser():
     raw = settings.po_proxy  # Используем только PO_PROXY для Playwright
     proxy_cfg = None
     if raw:
-        u = urlparse(raw)  # Пример: http://user:pass@host:port
-        server = f"{u.scheme}://{u.hostname}:{u.port}"
-        proxy_cfg = {"server": server}
-        if u.username:
-            proxy_cfg["username"] = u.username
-        if u.password:
-            proxy_cfg["password"] = u.password
+        try:
+            u = urlparse(raw)  # Пример: http://user:pass@host:port
+            server = f"{u.scheme}://{u.hostname}:{u.port}"
+            proxy_cfg = {"server": server}
+            if u.username:
+                proxy_cfg["username"] = u.username
+            if u.password:
+                proxy_cfg["password"] = u.password
+            logger.info(f"Using proxy: {server}")
+        except Exception as e:
+            logger.error(f"Error while parsing proxy: {e}")
 
     async with async_playwright() as p:
         launch_kwargs = {
@@ -63,31 +68,32 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
 
     url = "https://pocketoption.com/ru/"  # публичная страница
 
-    async with _browser() as page:
-        await page.route("**/*", lambda route: route.continue_())
-        await page.goto(url, wait_until="domcontentloaded")
+    try:
+        async with _browser() as page:
+            logger.info(f"Loading page: {url}")
+            await page.goto(url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(1500)
+            html = await page.content()
+            logger.info("Page loaded successfully")
 
-        # небольшая рандомная задержка
-        await page.wait_for_timeout(1500)
-
-        # Попытка извлечь потенциальные встраиваемые состояния/данные из HTML
-        html = await page.content()
-
-        # Грубый поиск JSON с candles внутри исходника
-        m = re.search(r"\{[^{}]*\"candles\"\s*:\s*\[.*?\]\}", html, flags=re.DOTALL)
-        if m:
-            try:
-                blob = json.loads(m.group(0))
-                candles = blob.get("candles")
-                if candles:
-                    df = pd.DataFrame(candles)[-lookback:]
-                    cols = {c: c for c in ["open", "high", "low", "close", "volume"] if c in df.columns}
-                    if "time" in df.columns and cols:
-                        df = df.rename(columns=cols).set_index(pd.to_datetime(df["time"], unit="s"))
-                        df.index.name = "time"
-                        return df[["open", "high", "low", "close", "volume"]]
-            except Exception:
-                pass
-
-        # Если ничего не нашли — возвращаем None (переключение на фолбэк)
-        return None
+            m = re.search(r"\{[^{}]*\"candles\"\s*:\s*\[.*?\]\}", html, flags=re.DOTALL)
+            if m:
+                try:
+                    blob = json.loads(m.group(0))
+                    candles = blob.get("candles")
+                    if candles:
+                        df = pd.DataFrame(candles)[-lookback:]
+                        cols = {c: c for c in ["open", "high", "low", "close", "volume"] if c in df.columns}
+                        if "time" in df.columns and cols:
+                            df = df.rename(columns=cols).set_index(pd.to_datetime(df["time"], unit="s"))
+                            df.index.name = "time"
+                            logger.info(f"Successfully parsed {len(df)} candles")
+                            return df[["open", "high", "low", "close", "volume"]]
+                except Exception as e:
+                    logger.error(f"Failed to parse candles: {e}")
+            else:
+                logger.warning("No candles data found in HTML")
+    except Exception as e:
+        logger.error(f"Error while scraping PocketOption: {e}")
+    
+    return None
