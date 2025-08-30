@@ -40,75 +40,64 @@ async def get_series(pair: str, interval: str = None):
     want_po_first = settings.po_enable_scrape and ("otc" in pair.lower())
     cache_key = ("series", pair, interval)
 
+    logger.info(f"Fetching data for {pair} with interval {interval}")
+
     if cache_key in cache and not want_po_first:
         debug.append("cache:hit")
         src_label = LAST_SOURCE.get(cache_key, "cache")
+        logger.info(f"Cache hit for {pair}")
         return cache[cache_key], f"{src_label} (cache)", debug
     else:
-        if cache_key in cache and want_po_first:
-            debug.append("cache:skip_po_first")
-        else:
-            debug.append("cache:miss")
+        debug.append("cache:miss")
 
     if settings.po_enable_scrape:
         try:
             pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
-            logger.info(f"PO try slug={pair_slug} interval={interval}")
+            logger.info(f"Trying PocketOption for {pair_slug}")
             df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
             if df is not None and not df.empty:
+                logger.info(f"PocketOption returned {len(df)} rows for {pair}")
                 debug.append(f"po:rows={len(df)}")
-                logger.info(f"SOURCE=PO pair={pair} interval={interval} rows={len(df)}")
                 cache[cache_key] = df
                 LAST_SOURCE[cache_key] = "PocketOption (best-effort)"
                 return df, LAST_SOURCE[cache_key], debug
             else:
+                logger.warning(f"PocketOption returned empty data for {pair}")
                 debug.append("po:none")
         except Exception as e:
-            logger.exception("PO scrape error")
+            logger.exception(f"Error fetching from PocketOption: {e}")
             debug.append(f"po:error:{type(e).__name__}")
     else:
         debug.append("po:off")
 
-    if cache_key in cache:
-        debug.append("cache:use_fallback")
-        src_label = LAST_SOURCE.get(cache_key, "cache")
-        return cache[cache_key], f"{src_label} (cache)", debug
-
+    # Логика фолбэка (Yahoo Finance, Alpha Vantage)
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
+        logger.info(f"Trying Yahoo Finance for {yf_ticker}")
         df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
         if df is not None and not df.empty:
+            logger.info(f"Yahoo Finance returned {len(df)} rows for {yf_ticker}")
             debug.append(f"yf:{yf_ticker}:rows={len(df)}")
-            logger.info(f"SOURCE=Yahoo(yfinance) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
             cache[cache_key] = df
             LAST_SOURCE[cache_key] = "Yahoo Finance (yfinance)"
             return df, LAST_SOURCE[cache_key], debug
         else:
+            logger.warning(f"Yahoo Finance returned empty data for {yf_ticker}")
             debug.append(f"yf:{yf_ticker}:none")
 
-        df = fetch_yahoo_direct_ohlc(yf_ticker, interval=interval, lookback=600)
-        if df is not None and not df.empty:
-            debug.append(f"yhd:{yf_ticker}:rows={len(df)}")
-            logger.info(f"SOURCE=Yahoo(chart) pair={pair} yf={yf_ticker} interval={interval} rows={len(df)}")
-            cache[cache_key] = df
-            LAST_SOURCE[cache_key] = "Yahoo Finance (direct)"
-            return df, LAST_SOURCE[cache_key], debug
-        else:
-            debug.append(f"yhd:{yf_ticker}:none")
-    else:
-        debug.append("yf:map:none")
-
+    # Логика для Alpha Vantage
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
     if df is not None and not df.empty:
+        logger.info(f"Alpha Vantage returned {len(df)} rows for {pair}")
         debug.append(f"av:rows={len(df)}")
-        logger.info(f"SOURCE=AlphaVantage pair={pair} interval={interval} rows={len(df)}")
         cache[cache_key] = df
         LAST_SOURCE[cache_key] = "Alpha Vantage"
         return df, LAST_SOURCE[cache_key], debug
     else:
+        logger.warning(f"Alpha Vantage returned empty data for {pair}")
         debug.append("av:none")
 
-    logger.warning(f"SOURCE=NONE pair={pair} interval={interval}")
+    logger.error(f"No data sources returned data for {pair}")
     return None, None, debug
 
 
