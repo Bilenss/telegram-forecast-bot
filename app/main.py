@@ -199,6 +199,17 @@ async def on_choose_pair(message: Message, state: FSMContext):
         await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
 
 
+async def on_poip(message: Message):
+    try:
+        from .data_sources.pocketoption_scraper import _browser
+        async with _browser() as page:
+            await page.goto("https://api.ipify.org?format=json", wait_until="domcontentloaded")
+            txt = await page.evaluate("() => document.body.innerText")
+        await message.answer(f"PO browser IP: <code>{txt}</code>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"PO browser error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+
+
 async def on_diag(message: Message):
     try:
         has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
@@ -269,6 +280,7 @@ def setup_router(dp: Dispatcher):
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
+    dp.message.register(on_poip, Command("poip"))  # Регистрация нового хендлера
 
 
 async def main():
@@ -280,10 +292,8 @@ async def main():
     dp = Dispatcher()
     setup_router(dp)
 
-    logger.info(f"ENV HTTP_PROXY={os.getenv('HTTP_PROXY')} HTTPS_PROXY={os.getenv('HTTPS_PROXY')} "
-            f"settings.http={getattr(settings,'http_proxy',None)} settings.https={getattr(settings,'https_proxy',None)}")
+    logger.info(f"ENV PO_PROXY={settings.po_proxy}")
 
-    logger.info(f"ENV PO_ENABLE_SCRAPE={os.getenv('PO_ENABLE_SCRAPE')} settings.po_enable_scrape={settings.po_enable_scrape}")
     logger.info("Bot started")
     await dp.start_polling(bot)
 
