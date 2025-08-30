@@ -24,7 +24,7 @@ async def _browser():
     raw = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
     proxy_cfg = None
     if raw:
-        u = urlparse(raw)
+        u = urlparse(raw)  # например: http://LOGIN:PASSWORD@HOST:PORT
         server = f"{u.scheme}://{u.hostname}:{u.port}"
         proxy_cfg = {"server": server}
         if u.username:
@@ -40,7 +40,7 @@ async def _browser():
         if proxy_cfg:
             launch_kwargs["proxy"] = proxy_cfg
 
-        # Создание браузера
+        # Создание браузера с прокси
         browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=ua,
