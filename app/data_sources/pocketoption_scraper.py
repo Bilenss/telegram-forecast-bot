@@ -20,11 +20,11 @@ from ..config import settings
 async def _browser():
     ua = random_ua()
 
-    # --- аккуратный парсинг прокси ---
-    raw = getattr(settings, "https_proxy", None) or getattr(settings, "http_proxy", None)
+    # Берем прокси только из PO_PROXY
+    raw = settings.po_proxy  # Используем только PO_PROXY для Playwright
     proxy_cfg = None
     if raw:
-        u = urlparse(raw)  # например: http://LOGIN:PASSWORD@HOST:PORT
+        u = urlparse(raw)  # Пример: http://user:pass@host:port
         server = f"{u.scheme}://{u.hostname}:{u.port}"
         proxy_cfg = {"server": server}
         if u.username:
@@ -38,20 +38,18 @@ async def _browser():
             "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
         }
         if proxy_cfg:
-            launch_kwargs["proxy"] = proxy_cfg
+            launch_kwargs["proxy"] = proxy_cfg  # Прокси передается через launch_kwargs
 
-        # Создание браузера с прокси
         browser = await p.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=ua,
             locale="ru-RU",  # Устанавливаем локаль для русскоязычного интерфейса
             viewport={"width": 1366, "height": 768},
         )
-        # Увеличиваем таймауты
-        context.set_default_timeout(60000)  # Таймаут по умолчанию для всех операций
-        context.set_default_navigation_timeout(90000)  # Таймаут для навигации
-
+        context.set_default_timeout(60000)  # Увеличиваем таймауты
+        context.set_default_navigation_timeout(90000)
         page = await context.new_page()
+
         try:
             yield page
         finally:
