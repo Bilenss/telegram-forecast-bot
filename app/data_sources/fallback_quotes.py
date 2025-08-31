@@ -14,6 +14,12 @@ def _note(src: str, msg: str) -> None:
 def get_last_notes() -> dict[str, str]:
     return dict(_last_notes)
 
+# ---------- HEADERS (для имитации браузера) ----------
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
 # ---------- YAHOO (через yfinance) ----------
 
 _DEF_CANDIDATES = {
@@ -27,6 +33,7 @@ _DEF_CANDIDATES = {
 
 def _download_yf(ticker: str, interval: str, period: str) -> pd.DataFrame | None:
     try:
+        yf.shared._requests_kwargs = {"headers": HEADERS}
         df = yf.download(tickers=ticker, interval=interval, period=period, progress=False)
         if df is None or df.empty:
             _note("yf", f"empty iv={interval} period={period}")
@@ -67,8 +74,7 @@ def _download_yahoo_chart(ticker: str, interval: str, rang: str) -> pd.DataFrame
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         params = {"interval": interval, "range": rang, "includePrePost": "true"}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, params=params, headers=headers, timeout=20)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=20)
         j = r.json()
         result = (j.get("chart") or {}).get("result")
         if not result:
