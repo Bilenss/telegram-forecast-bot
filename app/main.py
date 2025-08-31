@@ -245,7 +245,7 @@ async def main():
     setup_router(dp)
     logger.info(f"ENV PO_PROXY={settings.po_proxy}")
     logger.info("Bot started")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
