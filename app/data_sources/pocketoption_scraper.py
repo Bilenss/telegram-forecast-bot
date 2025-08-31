@@ -21,13 +21,13 @@ async def _browser():
             u = urlparse(raw)
             server = f"{u.scheme}://{u.hostname}:{u.port}"
             proxy_cfg = {"server": server}
-            if u.username:
+            if u.username and u.password:
                 proxy_cfg["username"] = u.username
-            if u.password:
                 proxy_cfg["password"] = u.password
             logger.info(f"Using proxy: {server}")
         except Exception as e:
             logger.error(f"Error while parsing proxy: {e}")
+
     async with async_playwright() as p:
         launch_kwargs = {
             "headless": True,
@@ -57,7 +57,7 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
     try:
         async with _browser() as page:
             logger.info(f"Loading page: {url}")
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(1500)
             html = await page.content()
             logger.info("Page loaded successfully")
@@ -80,4 +80,5 @@ async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 50
                 logger.warning("No candles data found in HTML")
     except Exception as e:
         logger.error(f"Error while scraping PocketOption: {e}")
+
     return None
