@@ -31,11 +31,11 @@ _DEF_CANDIDATES = {
 
 def _download_yf(ticker: str, interval: str, period: str) -> pd.DataFrame | None:
     try:
-        yf.shared._requests_kwargs = {"headers": HEADERS}
+        yf.shared._requests_kwargs = {"headers": HEADERS, "timeout": 20}
         df = yf.download(tickers=ticker, interval=interval, period=period, progress=False)
         if df is None or df.empty:
             _note("yf", f"empty iv={interval} period={period}")
-            logger.info(f"Yahoo(yfinance) empty: {ticker} iv={interval} period={period}")
+            logger.warning(f"Yahoo(yfinance) empty: {ticker} iv={interval} period={period}")
             return None
         df = df.rename(columns=str.lower)
         need = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
@@ -46,7 +46,7 @@ def _download_yf(ticker: str, interval: str, period: str) -> pd.DataFrame | None
         return df
     except Exception as e:
         _note("yf", f"error {type(e).__name__}: {e}")
-        logger.warning(f"Yahoo(yfinance) error: {e}")
+        logger.error(f"Yahoo(yfinance) error: {e}")
         return None
 
 def fetch_yf_ohlc(ticker: str, interval: str = "5m", lookback: int = 600) -> pd.DataFrame | None:
