@@ -175,16 +175,12 @@ async def on_diag(message: Message):
         has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
         timeframe = settings.timeframe
         po_flag = settings.po_enable_scrape
-        test_pair = "EUR/USD OTC"
-        test_slug = (
-            test_pair.replace(" ", "_")
-                     .replace("/", "_")
-                     .lower()
-        )
-        _df, _src, _dbg = await get_series("EUR/USD", timeframe)
-        df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-        df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-        df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
+        test_pair = "EUR/USD"
+        test_slug = test_pair.replace(" ", "_").replace("/", "_").lower()
+        _df, _src, _dbg = await get_series(test_pair, timeframe)
+        df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100)
+        df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100)
+        df_av = fetch_av_ohlc(test_pair, interval=timeframe, lookback=100)
         notes = get_last_notes()
         text = (
             "<b>Диагностика</b>\n"
@@ -196,10 +192,10 @@ async def on_diag(message: Message):
             f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
             f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
             f"Notes: <code>{notes}</code>\n"
-            "Примечание: значения >0 означают, что источник отдаёт бары.\n"
         )
         await message.answer(text, parse_mode="HTML")
     except Exception as e:
+        logger.error(f"Diag error: {e}")
         await message.answer(f"Diag error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
 
 async def on_net(message: Message):
