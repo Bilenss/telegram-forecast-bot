@@ -57,67 +57,6 @@ def fetch_yf_ohlc(ticker: str, interval: str = "5m", lookback: int = 600) -> pd.
             return df.tail(lookback)
     return None
 
-# Yahoo Chart API
-_YH_COMBOS = {
-    "1m":  ["5d", "1mo"],
-    "2m":  ["5d", "1mo"],
-    "5m":  ["5d", "1mo"],
-    "15m": ["1mo", "3mo"],
-    "30m": ["1mo", "3mo"],
-    "1h":  ["3mo", "6mo"],
-}
-
-def _download_yahoo_chart(ticker: str, interval: str, rang: str) -> pd.DataFrame | None:
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params = {"interval": interval, "range": rang, "includePrePost": "true"}
-        r = requests.get(url, params=params, headers=HEADERS, timeout=20)
-        j = r.json()
-        result = (j.get("chart") or {}).get("result")
-        if not result:
-            _note("yhd", f"empty result iv={interval} range={rang}")
-            logger.info(f"Yahoo(chart) empty result: {ticker} iv={interval} range={rang}")
-            return None
-        res0 = result[0]
-        ts = res0.get("timestamp")
-        ind = (res0.get("indicators") or {}).get("quote")
-        if not ts or not ind or not ind[0]:
-            _note("yhd", f"missing series iv={interval} range={rang}")
-            logger.info(f"Yahoo(chart) missing series: {ticker} iv={interval} range={rang}")
-            return None
-        q = ind[0]
-        df = pd.DataFrame({
-            "time": pd.to_datetime(ts, unit="s"),
-            "open": q.get("open"),
-            "high": q.get("high"),
-            "low": q.get("low"),
-            "close": q.get("close"),
-            "volume": q.get("volume") or [0] * len(ts),
-        })
-        df = df.dropna().sort_values("time").set_index("time")
-        _note("yhd", f"ok iv={interval} range={rang} rows={len(df)}")
-        logger.info(f"Yahoo(chart) OK: {ticker} iv={interval} range={rang} rows={len(df)}")
-        return df if not df.empty else None
-    except Exception as e:
-        _note("yhd", f"error {type(e).__name__}: {e}")
-        logger.warning(f"Yahoo(chart) error: {e}")
-        return None
-
-def fetch_yahoo_direct_ohlc(ticker: str, interval: str = "15m", lookback: int = 600) -> pd.DataFrame | None:
-    ranges = _YH_COMBOS.get(interval, ["1mo", "3mo"])
-    for rang in ranges:
-        df = _download_yahoo_chart(ticker, interval, rang)
-        if df is not None and not df.empty:
-            return df.tail(lookback)
-    fallback = {"1m": "5m", "2m": "5m", "5m": "15m", "15m": "1h", "30m": "1h"}.get(interval)
-    if fallback:
-        ranges = _YH_COMBOS.get(fallback, ["1mo", "3mo"])
-        for rang in ranges:
-            df = _download_yahoo_chart(ticker, fallback, rang)
-            if df is not None and not df.empty:
-                return df.tail(lookback)
-    return None
-
 # Alpha Vantage
 _IV_MAP = {
     "1m": "5min",
@@ -184,5 +123,5 @@ def fetch_av_ohlc(pair: str, interval: str = "5m", lookback: int = 600) -> pd.Da
         return df.tail(lookback) if not df.empty else None
     except Exception as e:
         _note("av", f"error {type(e).__name__}: {e}")
-        logger.warning(f"AlphaVantage error: {e}")
+        logger.error(f"AlphaVantage error: {e}")
         return None
