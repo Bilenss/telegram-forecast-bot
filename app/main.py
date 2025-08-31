@@ -1,12 +1,11 @@
-from __future__ import annotations 
+from __future__ import annotations
 import asyncio
 import os
-import requests  # для /net
+import requests
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
-
 from .states import Dialog
 from .keyboards import start_kb, market_kb, pairs_kb
 from .pairs import ACTIVE_FIN, ACTIVE_OTC, to_yf_ticker
@@ -25,23 +24,17 @@ from .data_sources.fallback_quotes import (
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
 
 LAST_SOURCE: dict[tuple, str] = {}
-
 MODE_TECH = "TECH"
 MODE_INDI = "INDI"
-
 MARKET_FIN = "FIN"
 MARKET_OTC = "OTC"
-
 
 async def get_series(pair: str, interval: str = None):
     interval = interval or settings.timeframe
     debug: list[str] = []
-
     want_po_first = settings.po_enable_scrape and ("otc" in pair.lower())
     cache_key = ("series", pair, interval)
-
     logger.info(f"Fetching data for {pair} with interval {interval}")
-
     if cache_key in cache and not want_po_first:
         debug.append("cache:hit")
         src_label = LAST_SOURCE.get(cache_key, "cache")
@@ -49,7 +42,6 @@ async def get_series(pair: str, interval: str = None):
         return cache[cache_key], f"{src_label} (cache)", debug
     else:
         debug.append("cache:miss")
-
     if settings.po_enable_scrape:
         try:
             pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
@@ -69,8 +61,6 @@ async def get_series(pair: str, interval: str = None):
             debug.append(f"po:error:{type(e).__name__}")
     else:
         debug.append("po:off")
-
-    # Логика фолбэка (Yahoo Finance, Alpha Vantage)
     yf_ticker = to_yf_ticker(pair)
     if yf_ticker:
         logger.info(f"Trying Yahoo Finance for {yf_ticker}")
@@ -84,8 +74,6 @@ async def get_series(pair: str, interval: str = None):
         else:
             logger.warning(f"Yahoo Finance returned empty data for {yf_ticker}")
             debug.append(f"yf:{yf_ticker}:none")
-
-    # Логика для Alpha Vantage
     df = fetch_av_ohlc(pair, interval=interval, lookback=600)
     if df is not None and not df.empty:
         logger.info(f"Alpha Vantage returned {len(df)} rows for {pair}")
@@ -96,10 +84,8 @@ async def get_series(pair: str, interval: str = None):
     else:
         logger.warning(f"Alpha Vantage returned empty data for {pair}")
         debug.append("av:none")
-
     logger.error(f"No data sources returned data for {pair}")
     return None, None, debug
-
 
 async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
     await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
@@ -130,12 +116,10 @@ async def handle_forecast(message: Message, state: FSMContext, mode: str, market
     else:
         await message.answer(text, parse_mode="HTML")
 
-
 async def on_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(Dialog.choose_mode)
     await message.answer("Выберите тип анализа:", reply_markup=start_kb())
-
 
 async def on_choose_mode(message: Message, state: FSMContext):
     text = message.text.strip().lower()
@@ -145,7 +129,6 @@ async def on_choose_mode(message: Message, state: FSMContext):
         await state.update_data(mode=MODE_TECH)
     await state.set_state(Dialog.choose_market)
     await message.answer("Выберите тип актива:", reply_markup=market_kb())
-
 
 async def on_choose_market(message: Message, state: FSMContext):
     text = message.text.strip().lower()
@@ -158,29 +141,24 @@ async def on_choose_market(message: Message, state: FSMContext):
     await state.set_state(Dialog.choose_pair)
     await message.answer("Выберите пару:", reply_markup=pairs_kb(market))
 
-
 async def on_choose_pair(message: Message, state: FSMContext):
     if message.text == "⬅️ Назад":
         await state.set_state(Dialog.choose_market)
         await message.answer("Выберите тип актива:", reply_markup=market_kb())
         return
-
     data = await state.get_data()
     mode = data.get("mode", MODE_TECH)
     market = data.get("market", MARKET_FIN)
     pair = message.text.strip()
-
     allowed = (ACTIVE_FIN if market == MARKET_FIN else ACTIVE_OTC)
     if pair not in allowed:
         await message.answer("Пожалуйста, выберите пару с клавиатуры.")
         return
-
     try:
         await handle_forecast(message, state, mode, market, pair)
     except Exception:
         logger.exception("Forecast error")
         await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
-
 
 async def on_poip(message: Message):
     try:
@@ -191,7 +169,6 @@ async def on_poip(message: Message):
         await message.answer(f"PO browser IP: <code>{txt}</code>", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"PO browser error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
-
 
 async def on_diag(message: Message):
     try:
@@ -204,13 +181,11 @@ async def on_diag(message: Message):
                      .replace("/", "_")
                      .lower()
         )
-
         _df, _src, _dbg = await get_series("EUR/USD", timeframe)
         df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
         df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
         notes = get_last_notes()
-
         text = (
             "<b>Диагностика</b>\n"
             f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
@@ -227,14 +202,12 @@ async def on_diag(message: Message):
     except Exception as e:
         await message.answer(f"Diag error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
 
-
 async def on_net(message: Message):
     try:
         r = requests.get("https://api.ipify.org?format=json", timeout=10)
         await message.answer(f"NET OK: <code>{r.text}</code>", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"NET ERROR: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
-
 
 async def on_env(message: Message):
     await message.answer(
@@ -244,7 +217,6 @@ async def on_env(message: Message):
         parse_mode="HTML",
     )
 
-
 async def on_flush(message: Message):
     try:
         cache.clear()
@@ -252,7 +224,6 @@ async def on_flush(message: Message):
         await message.answer("Кэш очищен ✅")
     except Exception as e:
         await message.answer(f"Flush error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
-
 
 def setup_router(dp: Dispatcher):
     dp.message.register(on_start, CommandStart())
@@ -263,23 +234,18 @@ def setup_router(dp: Dispatcher):
     dp.message.register(on_choose_mode, Dialog.choose_mode)
     dp.message.register(on_choose_market, Dialog.choose_market)
     dp.message.register(on_choose_pair, Dialog.choose_pair)
-    dp.message.register(on_poip, Command("poip"))  # Регистрация нового хендлера
-
+    dp.message.register(on_poip, Command("poip"))
 
 async def main():
     token = settings.telegram_token
     if not token:
         raise RuntimeError("TELEGRAM_TOKEN is not set")
-
     bot = Bot(token)
     dp = Dispatcher()
     setup_router(dp)
-
     logger.info(f"ENV PO_PROXY={settings.po_proxy}")
-
     logger.info("Bot started")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
