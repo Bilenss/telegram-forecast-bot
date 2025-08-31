@@ -14,14 +14,12 @@ def _note(src: str, msg: str) -> None:
 def get_last_notes() -> dict[str, str]:
     return dict(_last_notes)
 
-# ---------- HEADERS (для имитации браузера) ----------
-
+# Заголовки для имитации браузера
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
-# ---------- YAHOO (через yfinance) ----------
-
+# Кандидаты для Yahoo Finance
 _DEF_CANDIDATES = {
     "1m":  [("1m", "5d"), ("5m", "5d"), ("15m", "1mo"), ("1h", "3mo")],
     "2m":  [("2m", "5d"), ("5m", "5d"), ("15m", "1mo"), ("1h", "3mo")],
@@ -40,7 +38,7 @@ def _download_yf(ticker: str, interval: str, period: str) -> pd.DataFrame | None
             logger.info(f"Yahoo(yfinance) empty: {ticker} iv={interval} period={period}")
             return None
         df = df.rename(columns=str.lower)
-        need = [c for c in ["open","high","low","close","volume"] if c in df.columns]
+        need = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
         df = df[need]
         df.index.name = "time"
         _note("yf", f"ok iv={interval} period={period} rows={len(df)}")
@@ -59,8 +57,7 @@ def fetch_yf_ohlc(ticker: str, interval: str = "5m", lookback: int = 600) -> pd.
             return df.tail(lookback)
     return None
 
-# ---------- YAHOO (прямой Chart API) ----------
-
+# Yahoo Chart API
 _YH_COMBOS = {
     "1m":  ["5d", "1mo"],
     "2m":  ["5d", "1mo"],
@@ -95,7 +92,7 @@ def _download_yahoo_chart(ticker: str, interval: str, rang: str) -> pd.DataFrame
             "high": q.get("high"),
             "low": q.get("low"),
             "close": q.get("close"),
-            "volume": q.get("volume") or [0]*len(ts),
+            "volume": q.get("volume") or [0] * len(ts),
         })
         df = df.dropna().sort_values("time").set_index("time")
         _note("yhd", f"ok iv={interval} range={rang} rows={len(df)}")
@@ -112,18 +109,16 @@ def fetch_yahoo_direct_ohlc(ticker: str, interval: str = "15m", lookback: int = 
         df = _download_yahoo_chart(ticker, interval, rang)
         if df is not None and not df.empty:
             return df.tail(lookback)
-    # Понижаем интервал
-    fallback = {"1m":"5m","2m":"5m","5m":"15m","15m":"1h","30m":"1h"}.get(interval)
+    fallback = {"1m": "5m", "2m": "5m", "5m": "15m", "15m": "1h", "30m": "1h"}.get(interval)
     if fallback:
-        ranges = _YH_COMBOS.get(fallback, ["1mo","3mo"])
+        ranges = _YH_COMBOS.get(fallback, ["1mo", "3mo"])
         for rang in ranges:
             df = _download_yahoo_chart(ticker, fallback, rang)
             if df is not None and not df.empty:
                 return df.tail(lookback)
     return None
 
-# ---------- Alpha Vantage ----------
-
+# Alpha Vantage
 _IV_MAP = {
     "1m": "5min",
     "2m": "5min",
@@ -145,7 +140,6 @@ def fetch_av_ohlc(pair: str, interval: str = "5m", lookback: int = 600) -> pd.Da
         return None
     from_sym, to_sym = base.split("/", 1)
     av_iv = _IV_MAP.get(interval, "15min")
-
     url = "https://www.alphavantage.co/query"
     params = {
         "function": "FX_INTRADAY",
@@ -183,7 +177,7 @@ def fetch_av_ohlc(pair: str, interval: str = "5m", lookback: int = 600) -> pd.Da
                 float(ohlc.get("4. close", "nan")),
                 0.0,
             ])
-        df = pd.DataFrame(rows, columns=["time","open","high","low","close","volume"])
+        df = pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
         df = df.sort_values("time").set_index("time").dropna()
         _note("av", f"ok iv={av_iv} rows={len(df)}")
         logger.info(f"AlphaVantage OK: {from_sym}/{to_sym} iv={av_iv} rows={len(df)}")
