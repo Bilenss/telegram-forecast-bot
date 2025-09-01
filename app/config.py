@@ -8,5 +8,5 @@ PO_PROXY = os.getenv("PO_PROXY", "")  # http://user:pass@host:port or empty
 ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY", "")
 PAIR_TIMEFRAME = os.getenv("PAIR_TIMEFRAME", "15m")  # default
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-ENABLE_CHARTS = int(os.getenv("ENABLE_CHARTS", "1"))
+ENABLE_CHARTS = int(os.getenv("ENABLE_CHARTS", "0"))
 TMP_DIR = os.getenv("TMP_DIR", "/tmp")
