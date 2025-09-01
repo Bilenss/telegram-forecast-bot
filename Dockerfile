@@ -15,6 +15,9 @@ WORKDIR /app
 COPY app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# Установка Chromium + зависимостей для playwright
+RUN python -m playwright install --with-deps chromium
+
 # Кладём пакет 'app' в /app/app
 COPY app /app/app
 
