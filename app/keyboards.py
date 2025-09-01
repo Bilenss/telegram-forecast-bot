@@ -27,7 +27,7 @@ def pairs_keyboard(pairs):
         kb.add(KeyboardButton(name))
     return kb
 
-# 🔁 Обновлённая функция с фильтрацией по доступности PO-скрапинга
+# Клавиатура таймфреймов: убираем 15s/30s, если скрапинг PO выключен
 def timeframe_keyboard(lang, po_available=True):
     lbl = ["15s", "30s", "1m", "5m", "15m", "1h"] if po_available else ["1m", "5m", "15m", "1h"]
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
