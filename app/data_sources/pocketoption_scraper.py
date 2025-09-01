@@ -117,7 +117,13 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
                 continue
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        launch_kwargs = {
+            "headless": True,
+            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+        }
+        if PO_PROXY:
+            launch_kwargs["proxy"] = {"server": PO_PROXY}
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(user_agent=random.choice(UAS), locale="en-US")
         page = context.new_page()
 
