@@ -83,14 +83,14 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
     if is_otc:
         if not PO_ENABLE_SCRAPE:
             raise RuntimeError("OTC requires PocketOption scraping (PO_ENABLE_SCRAPE=1)")
-        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe)
+        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=True)
         cache.set(cache_key, df)
         return df
 
     # 2) FIN: сначала пробуем PO, затем публичный источник
     if PO_ENABLE_SCRAPE:
         try:
-            df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe)
+            df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
             cache.set(cache_key, df)
             return df
         except Exception as e:
