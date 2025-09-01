@@ -67,7 +67,7 @@ async def pair_selected(m: types.Message, state: FSMContext):
         return
     await state.update_data(pair=m.text)
     text = "Выберите таймфрейм:" if lang == 'ru' else "Select timeframe:"
-    await m.answer(text, reply_markup=timeframe_keyboard(lang))
+     await m.answer(text, reply_markup=timeframe_keyboard(lang, po_available=bool(PO_ENABLE_SCRAPE)))
     await ST.Timeframe.set()
 
 # 🔁 Патч A: жёсткое правило OTC + фолбэк только для FIN
