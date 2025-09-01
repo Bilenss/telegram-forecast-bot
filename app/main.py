@@ -1,10 +1,10 @@
-import os, asyncio, random, time
+import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters import Text
 
-from .config import TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS, PO_ENABLE_SCRAPE, ENABLE_CHARTS, TMP_DIR, LOG_LEVEL
+from .config import TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS, PO_ENABLE_SCRAPE, LOG_LEVEL
 from .states import ForecastStates as ST
 from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
 from .utils.cache import TTLCache
@@ -67,10 +67,10 @@ async def pair_selected(m: types.Message, state: FSMContext):
         return
     await state.update_data(pair=m.text)
     text = "Выберите таймфрейм:" if lang == 'ru' else "Select timeframe:"
-     await m.answer(text, reply_markup=timeframe_keyboard(lang, po_available=bool(PO_ENABLE_SCRAPE)))
+    await m.answer(text, reply_markup=timeframe_keyboard(lang, po_available=bool(PO_ENABLE_SCRAPE)))
     await ST.Timeframe.set()
 
-# 🔁 Патч A: жёсткое правило OTC + фолбэк только для FIN
+# OTC строго через PO, фолбэк только для FIN
 def _fetch_ohlc(pair_info: dict, timeframe: str):
     cache_key = f"{pair_info['po']}:{timeframe}"
     df = cache.get(cache_key)
@@ -79,6 +79,7 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
 
     is_otc = bool(pair_info.get("otc", False))
 
+    # 1) OTC: только PocketOption, без фолбэка
     if is_otc:
         if not PO_ENABLE_SCRAPE:
             raise RuntimeError("OTC requires PocketOption scraping (PO_ENABLE_SCRAPE=1)")
@@ -86,6 +87,7 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
         cache.set(cache_key, df)
         return df
 
+    # 2) FIN: сначала пробуем PO, затем публичный источник
     if PO_ENABLE_SCRAPE:
         try:
             df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe)
@@ -111,7 +113,6 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
 
     await m.answer("Готовлю данные..." if lang == 'ru' else "Fetching data...")
 
-    # 🔁 Патч C: расширенные ошибки для OTC
     try:
         df = _fetch_ohlc(info, timeframe)
     except Exception as e:
@@ -135,10 +136,7 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
         action, notes = simple_ta_signal(df)
         ind = {}
 
-    # 🔁 Патч B: отключаем графики, всегда отправляем только текст
-    # Chart отключён — отправка только текста
-
-    # 🔁 Патч D: формат ответа — прогноз и расшифровка
+    # Только текст: прогноз + расшифровка
     if lang == "ru":
         lines = [f"👉 Прогноз: <b>{action}</b>"]
         if ind:
