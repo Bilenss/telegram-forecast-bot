@@ -1,251 +1,157 @@
-from __future__ import annotations
-import asyncio
-import os
-import requests
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, ReplyKeyboardRemove, FSInputFile
-from aiogram.filters import CommandStart, Command
-from aiogram.fsm.context import FSMContext
-from .states import Dialog
-from .keyboards import start_kb, market_kb, pairs_kb
-from .pairs import ACTIVE_FIN, ACTIVE_OTC, to_yf_ticker
-from .config import settings
-from .utils.logging import logger
-from .utils.cache import cache
-from .utils.charts import save_chart
-from .analysis.indicators import enrich_indicators
-from .analysis.decision import decide_indicators, decide_technicals
-from .data_sources.fallback_quotes import (
-    fetch_yf_ohlc,
-    fetch_av_ohlc,
-    fetch_yahoo_direct_ohlc,
-    get_last_notes,
-)
+import os, asyncio, random, time
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters import Text
+
+from .config import TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS, PO_ENABLE_SCRAPE, ENABLE_CHARTS, TMP_DIR, LOG_LEVEL
+from .states import ForecastStates as ST
+from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
+from .utils.cache import TTLCache
+from .utils.logging import setup
+from .utils.charts import plot_candles
+from .pairs import all_pairs
+from .analysis.indicators import compute_indicators
+from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.pocketoption_scraper import fetch_po_ohlc
+from .data_sources.fallback_quotes import fetch_public_ohlc
 
-LAST_SOURCE: dict[tuple, str] = {}
-MODE_TECH = "TECH"
-MODE_INDI = "INDI"
-MARKET_FIN = "FIN"
-MARKET_OTC = "OTC"
+logger = setup(LOG_LEVEL)
 
-async def get_series(pair: str, interval: str = None):
-    interval = interval or settings.timeframe
-    debug: list[str] = []
-    want_po_first = settings.po_enable_scrape and ("otc" in pair.lower())
-    cache_key = ("series", pair, interval)
-    logger.info(f"Fetching data for {pair} with interval {interval}")
-    if cache_key in cache and not want_po_first:
-        debug.append("cache:hit")
-        src_label = LAST_SOURCE.get(cache_key, "cache")
-        logger.info(f"Cache hit for {pair}")
-        return cache[cache_key], f"{src_label} (cache)", debug
-    else:
-        debug.append("cache:miss")
-    if settings.po_enable_scrape:
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
+
+INTRO_RU = "Привет! Я бот прогнозов. Выберите язык."
+INTRO_EN = "Hello! I am a forecasts bot. Choose language."
+
+@dp.message_handler(commands=['start'])
+async def cmd_start(m: types.Message, state: FSMContext):
+    await state.finish()
+    await m.answer(INTRO_RU if DEFAULT_LANG=='ru' else INTRO_EN, reply_markup=lang_keyboard())
+    await ST.Language.set()
+
+@dp.message_handler(lambda m: m.text in ["RU", "EN"], state=ST.Language)
+async def lang_selected(m: types.Message, state: FSMContext):
+    lang = 'ru' if m.text == "RU" else 'en'
+    await state.update_data(lang=lang)
+    text = "Выберите режим анализа:" if lang=='ru' else "Choose analysis mode:"
+    await m.answer(text, reply_markup=mode_keyboard(lang))
+    await ST.Mode.set()
+
+@dp.message_handler(lambda m: m.text in ["📊 Технический анализ","📈 Индикаторы","📊 Technical analysis","📈 Indicators"], state=ST.Mode)
+async def mode_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang","ru")
+    mode = "ta" if "Техничес" in m.text or "Technical" in m.text else "ind"
+    await state.update_data(mode=mode)
+    text = "Выберите категорию актива:" if lang=='ru' else "Choose asset category:"
+    await m.answer(text, reply_markup=category_keyboard(lang))
+    await ST.Category.set()
+
+@dp.message_handler(lambda m: m.text in ["💰 ACTIVE FIN","⏱️ ACTIVE OTC"], state=ST.Category)
+async def category_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang","ru")
+    category = "fin" if "FIN" in m.text else "otc"
+    await state.update_data(category=category)
+    pairs = all_pairs(category)
+    text = "Выберите валютную пару:" if lang=='ru' else "Choose a pair:"
+    await m.answer(text, reply_markup=pairs_keyboard(pairs))
+    await ST.Pair.set()
+
+@dp.message_handler(state=ST.Pair)
+async def pair_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang","ru")
+    category = (await state.get_data()).get("category","fin")
+    pairs = all_pairs(category)
+    if m.text not in pairs:
+        await m.answer("Пожалуйста, выберите из клавиатуры." if lang=='ru' else "Please use the keyboard.")
+        return
+    await state.update_data(pair=m.text)
+    text = "Выберите таймфрейм:" if lang=='ru' else "Select timeframe:"
+    await m.answer(text, reply_markup=timeframe_keyboard(lang))
+    await ST.Timeframe.set()
+
+def _fetch_ohlc(pair_info: dict, timeframe: str):
+    # Cache first
+    cache_key = f"{pair_info['po']}:{timeframe}"
+    df = cache.get(cache_key)
+    if df is not None:
+        return df
+    # Try PocketOption scraping if enabled
+    if PO_ENABLE_SCRAPE:
         try:
-            pair_slug = pair.replace(" ", "_").replace("/", "_").lower()
-            logger.info(f"Trying PocketOption for {pair_slug}")
-            df = await fetch_po_ohlc(pair_slug, interval=interval, lookback=600)
-            if df is not None and not df.empty:
-                logger.info(f"PocketOption returned {len(df)} rows for {pair}")
-                debug.append(f"po:rows={len(df)}")
-                cache[cache_key] = df
-                LAST_SOURCE[cache_key] = "PocketOption (best-effort)"
-                return df, LAST_SOURCE[cache_key], debug
-            else:
-                logger.warning(f"PocketOption returned empty data for {pair}")
-                debug.append("po:none")
+            df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe)
+            cache.set(cache_key, df); return df
         except Exception as e:
-            logger.exception(f"Error fetching from PocketOption: {e}")
-            debug.append(f"po:error:{type(e).__name__}")
-    else:
-        debug.append("po:off")
-    yf_ticker = to_yf_ticker(pair)
-    if yf_ticker:
-        logger.info(f"Trying Yahoo Finance for {yf_ticker}")
-        df = fetch_yf_ohlc(yf_ticker, interval=interval, lookback=600)
-        if df is not None and not df.empty:
-            logger.info(f"Yahoo Finance returned {len(df)} rows for {yf_ticker}")
-            debug.append(f"yf:{yf_ticker}:rows={len(df)}")
-            cache[cache_key] = df
-            LAST_SOURCE[cache_key] = "Yahoo Finance (yfinance)"
-            return df, LAST_SOURCE[cache_key], debug
-        else:
-            logger.warning(f"Yahoo Finance returned empty data for {yf_ticker}")
-            debug.append(f"yf:{yf_ticker}:none")
-    df = fetch_av_ohlc(pair, interval=interval, lookback=600)
-    if df is not None and not df.empty:
-        logger.info(f"Alpha Vantage returned {len(df)} rows for {pair}")
-        debug.append(f"av:rows={len(df)}")
-        cache[cache_key] = df
-        LAST_SOURCE[cache_key] = "Alpha Vantage"
-        return df, LAST_SOURCE[cache_key], debug
-    else:
-        logger.warning(f"Alpha Vantage returned empty data for {pair}")
-        debug.append("av:none")
-    logger.error(f"No data sources returned data for {pair}")
-    return None, None, debug
-
-async def handle_forecast(message: Message, state: FSMContext, mode: str, market: str, pair: str):
-    await message.answer("Получаю данные…", reply_markup=ReplyKeyboardRemove())
-    df, src, debug = await get_series(pair, settings.timeframe)
-    if df is None or df.empty:
-        dbg = " | ".join(debug[-5:]) if debug else "n/a"
-        await message.answer(
-            f"Не удалось получить котировки для пары {pair}.\n"
-            f"Диагностика: {dbg}\n"
-            "Попробуйте другую пару или повторите попытку позже."
-        )
-        return
-    raw = df.copy()
-    df = enrich_indicators(raw)
-    if mode == MODE_INDI:
-        decision, expl = decide_indicators(df)
-    else:
-        decision, expl = decide_technicals(df)
-    chart_path = save_chart(df.tail(300), out_dir="/tmp/charts", title=f"{pair}_{settings.timeframe}")
-    text = (
-        f"👉 <b>Прогноз:</b> <code>{decision}</code>\n"
-        f"📈 <b>Обоснование:</b> {expl or '—'}\n"
-        f"⏱️ Таймфрейм: {settings.timeframe}\n"
-        f"🧪 Источник: {src or ('PocketOption (best-effort)' if settings.po_enable_scrape else 'Публичные котировки (fallback)')}"
-    )
-    if chart_path and os.path.exists(chart_path):
-        await message.answer_photo(photo=FSInputFile(chart_path), caption=text, parse_mode="HTML")
-    else:
-        await message.answer(text, parse_mode="HTML")
-
-async def on_start(message: Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(Dialog.choose_mode)
-    await message.answer("Выберите тип анализа:", reply_markup=start_kb())
-
-async def on_choose_mode(message: Message, state: FSMContext):
-    text = message.text.strip().lower()
-    if "индик" in text:
-        await state.update_data(mode=MODE_INDI)
-    else:
-        await state.update_data(mode=MODE_TECH)
-    await state.set_state(Dialog.choose_market)
-    await message.answer("Выберите тип актива:", reply_markup=market_kb())
-
-async def on_choose_market(message: Message, state: FSMContext):
-    text = message.text.strip().lower()
-    if "otc" in text:
-        await state.update_data(market=MARKET_OTC)
-    else:
-        await state.update_data(market=MARKET_FIN)
-    data = await state.get_data()
-    market = data.get("market", MARKET_FIN)
-    await state.set_state(Dialog.choose_pair)
-    await message.answer("Выберите пару:", reply_markup=pairs_kb(market))
-
-async def on_choose_pair(message: Message, state: FSMContext):
-    if message.text == "⬅️ Назад":
-        await state.set_state(Dialog.choose_market)
-        await message.answer("Выберите тип актива:", reply_markup=market_kb())
-        return
-    data = await state.get_data()
-    mode = data.get("mode", MODE_TECH)
-    market = data.get("market", MARKET_FIN)
-    pair = message.text.strip()
-    allowed = (ACTIVE_FIN if market == MARKET_FIN else ACTIVE_OTC)
-    if pair not in allowed:
-        await message.answer("Пожалуйста, выберите пару с клавиатуры.")
-        return
+            logger.warning(f"PO scraping failed: {e}")
+    # Fallback public quotes
     try:
-        await handle_forecast(message, state, mode, market, pair)
+        df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe)
+        cache.set(cache_key, df); return df
+    except Exception as e:
+        logger.error(f"Public quotes failed: {e}")
+        raise
+
+@dp.message_handler(state=ST.Timeframe)
+async def timeframe_selected(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("lang","ru")
+    category = data.get("category","fin")
+    mode = data.get("mode","ind")
+    pair_name = data.get("pair")
+    pairs = all_pairs(category)
+    info = pairs[pair_name]
+    timeframe = m.text.strip()
+
+    await m.answer(("Готовлю данные..." if lang=='ru' else "Fetching data..."))
+    try:
+        df = _fetch_ohlc(info, timeframe)
     except Exception:
-        logger.exception("Forecast error")
-        await message.answer("Произошла ошибка при анализе. Попробуйте еще раз позже.")
+        await m.answer("Не удалось получить котировки сейчас." if lang=='ru' else "Failed to fetch quotes right now.")
+        await state.finish()
+        return
 
-async def on_poip(message: Message):
-    try:
-        from .data_sources.pocketoption_scraper import _browser
-        async with _browser() as page:
-            await page.goto("https://api.ipify.org?format=json", wait_until="domcontentloaded")
-            txt = await page.evaluate("() => document.body.innerText")
-        await message.answer(f"PO browser IP: <code>{txt}</code>", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"PO browser error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+    if mode == "ind":
+        ind = compute_indicators(df)
+        action, notes = signal_from_indicators(df, ind)
+    else:
+        action, notes = simple_ta_signal(df)
+        ind = {}
 
-async def on_diag(message: Message):
-    try:
-        has_key = bool(os.getenv("ALPHAVANTAGE_KEY"))
-        timeframe = settings.timeframe
-        po_flag = settings.po_enable_scrape
-        test_pair = "EUR/USD OTC"
-        test_slug = (
-            test_pair.replace(" ", "_")
-                     .replace("/", "_")
-                     .lower()
-        )
-        _df, _src, _dbg = await get_series("EUR/USD", timeframe)
-        df_yf = fetch_yf_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-        df_yhd = fetch_yahoo_direct_ohlc("EURUSD=X", interval=timeframe, lookback=100) or None
-        df_av = fetch_av_ohlc("EUR/USD", interval=timeframe, lookback=100) or None
-        notes = get_last_notes()
-        text = (
-            "<b>Диагностика</b>\n"
-            f"PAIR_TIMEFRAME: <code>{timeframe}</code>\n"
-            f"PO_ENABLE_SCRAPE: <code>{'on' if po_flag else 'off'}</code>\n"
-            f"PO test slug: <code>{test_slug}</code>\n"
-            f"ALPHAVANTAGE_KEY: <code>{'set' if has_key else 'missing'}</code>\n"
-            f"Yahoo EURUSD=X rows: <code>{len(df_yf) if df_yf is not None else 0}</code>\n"
-            f"YahooDirect EURUSD=X rows: <code>{len(df_yhd) if df_yhd is not None else 0}</code>\n"
-            f"AlphaVantage EUR/USD rows: <code>{len(df_av) if df_av is not None else 0}</code>\n"
-            f"Notes: <code>{notes}</code>\n"
-            "Примечание: значения >0 означают, что источник отдаёт бары.\n"
-        )
-        await message.answer(text, parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"Diag error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+    # Chart
+    photo_path = ""
+    if ENABLE_CHARTS:
+        fname = os.path.join(TMP_DIR, f"chart_{int(time.time())}.png")
+        photo_path = plot_candles(df, fname)
 
-async def on_net(message: Message):
-    try:
-        r = requests.get("https://api.ipify.org?format=json", timeout=10)
-        await message.answer(f"NET OK: <code>{r.text}</code>", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"NET ERROR: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+    # Message
+    if lang == "ru":
+        lines = [f"👉 Прогноз: <b>{action}</b>"]
+        if ind:
+            lines.append("📈 Индикаторы: " + ", ".join([f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"]))
+        if notes:
+            lines.append("ℹ️ " + "; ".join(notes))
+        text = "\n".join(lines)
+    else:
+        lines = [f"👉 Forecast: <b>{action}</b>"]
+        if ind:
+            lines.append("📈 Indicators: " + ", ".join([f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"]))
+        if notes:
+            lines.append("ℹ️ " + "; ".join(notes))
+        text = "\n".join(lines)
 
-async def on_env(message: Message):
-    await message.answer(
-        "PO_ENABLE_SCRAPE env: <code>{}</code>\nsettings.po_enable_scrape: <code>{}</code>".format(
-            os.getenv("PO_ENABLE_SCRAPE"), settings.po_enable_scrape
-        ),
-        parse_mode="HTML",
-    )
+    if photo_path and os.path.exists(photo_path):
+        with open(photo_path, "rb") as ph:
+            await m.answer_photo(ph, caption=text, parse_mode="HTML")
+    else:
+        await m.answer(text, parse_mode="HTML")
 
-async def on_flush(message: Message):
-    try:
-        cache.clear()
-        LAST_SOURCE.clear()
-        await message.answer("Кэш очищен ✅")
-    except Exception as e:
-        await message.answer(f"Flush error: <code>{type(e).__name__}: {e}</code>", parse_mode="HTML")
+    await state.finish()
 
-def setup_router(dp: Dispatcher):
-    dp.message.register(on_start, CommandStart())
-    dp.message.register(on_diag, Command("diag"))
-    dp.message.register(on_net, Command("net"))
-    dp.message.register(on_env, Command("env"))
-    dp.message.register(on_flush, Command("flush"))
-    dp.message.register(on_choose_mode, Dialog.choose_mode)
-    dp.message.register(on_choose_market, Dialog.choose_market)
-    dp.message.register(on_choose_pair, Dialog.choose_pair)
-    dp.message.register(on_poip, Command("poip"))
-
-async def main():
-    token = settings.telegram_token
-    if not token:
-        raise RuntimeError("TELEGRAM_TOKEN is not set")
-    bot = Bot(token)
-    dp = Dispatcher()
-    setup_router(dp)
-    logger.info(f"ENV PO_PROXY={settings.po_proxy}")
-    logger.info("Bot started")
-    await dp.start_polling(bot, skip_updates=True)
+def main():
+    if not TELEGRAM_TOKEN:
+        raise SystemExit("TELEGRAM_TOKEN env var is required")
+    executor.start_polling(dp, skip_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

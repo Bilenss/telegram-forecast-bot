@@ -1,66 +1,52 @@
+from __future__ import annotations
 import pandas as pd
 
-def _trend(a: pd.Series) -> float:
-    if a is None or len(a) < 3:
-        return 0.0
-    n = min(5, len(a) // 2)
-    return float(a.tail(n).mean() - a.tail(2 * n).head(n).mean())
-
-def decide_indicators(df: pd.DataFrame) -> tuple[str, str]:
-    if df is None or df.empty:
-        return "NEUTRAL", "Нет данных для анализа"
-    last = df.iloc[-1]
-    expl = []
+def signal_from_indicators(df: pd.DataFrame, ind: dict) -> tuple[str, list[str]]:
+    notes = []
     score = 0
-    if last.get("rsi") is not None:
-        if last.rsi < 30:
-            score += 1; expl.append(f"RSI={last.rsi:.1f} (перепроданность)")
-        elif last.rsi > 70:
-            score -= 1; expl.append(f"RSI={last.rsi:.1f} (перекупленность)")
-    if last.get("macd_hist") is not None:
-        t = _trend(df["macd_hist"])
-        if t > 0: score += 0.5; expl.append("MACD гист. растет")
-        elif t < 0: score -= 0.5; expl.append("MACD гист. падает")
-    if last.get("ema50") is not None:
-        if last.close > last.ema50:
-            score += 0.5; expl.append("Цена выше EMA50")
-        else:
-            score -= 0.5; expl.append("Цена ниже EMA50")
-    if {"bb_low", "bb_high"}.issubset(df.columns):
-        if last.close <= last.bb_low:
-            score += 0.25; expl.append("Касание нижней Bollinger")
-        elif last.close >= last.bb_high:
-            score -= 0.25; expl.append("Касание верхней Bollinger")
-    if score > 0.5:
-        return "BUY", "; ".join(expl)
-    if score < -0.5:
-        return "SELL", "; ".join(expl)
-    return "NEUTRAL", "; ".join(expl) or "Сигналов недостаточно"
 
-def decide_technicals(df: pd.DataFrame) -> tuple[str, str]:
-    if df is None or df.empty:
-        return "NEUTRAL", "Нет данных для анализа"
-    last = df.iloc[-1]
-    expl = []
-    score = 0
-    prev = df.iloc[-2]
-    if last.ema20 > last.ema50 and prev.ema20 <= prev.ema50:
-        score += 1; expl.append("Бычий кросс EMA20/50")
-    if last.ema20 < last.ema50 and prev.ema20 >= prev.ema50:
-        score -= 1; expl.append("Медвежий кросс EMA20/50")
-    last_body = abs(last.close - last.open)
-    prev_body = abs(prev.close - prev.open)
-    if last.close > last.open and prev.close < prev.open and last_body > prev_body:
-        score += 0.5; expl.append("Бычье поглощение")
-    if last.close < last.open and prev.close > prev.open and last_body > prev_body:
-        score -= 0.5; expl.append("Медвежье поглощение")
-    window = df.tail(50)
-    if last.close <= window.low.min() * 1.003:
-        score += 0.25; expl.append("У локальной поддержки")
-    if last.close >= window.high.max() * 0.997:
-        score -= 0.25; expl.append("У локального сопротивления")
-    if score > 0.5:
-        return "BUY", "; ".join(expl)
-    if score < -0.5:
-        return "SELL", "; ".join(expl)
-    return "NEUTRAL", "; ".join(expl) or "Сигналов недостаточно"
+    rsi = ind["RSI"]
+    if rsi < 30:
+        score += 1; notes.append(f"RSI={rsi} (oversold)")
+    elif rsi > 70:
+        score -= 1; notes.append(f"RSI={rsi} (overbought)")
+
+    if ind["EMA_cross_up"]:
+        score += 1; notes.append("EMA fast crossed above slow")
+    if ind["EMA_cross_down"]:
+        score -= 1; notes.append("EMA fast crossed below slow")
+
+    if ind["MACD"] > ind["MACD_signal"]:
+        score += 0.5; notes.append("MACD > Signal")
+    else:
+        score -= 0.5; notes.append("MACD < Signal")
+
+    close = float(df['Close'].iloc[-1])
+    if close <= ind["BB_lower"]:
+        score += 0.5; notes.append("Price near lower Bollinger")
+    elif close >= ind["BB_upper"]:
+        score -= 0.5; notes.append("Price near upper Bollinger")
+
+    if score > 0.5: action = "BUY"
+    elif score < -0.5: action = "SELL"
+    else: action = "HOLD"
+
+    return action, notes
+
+def simple_ta_signal(df: pd.DataFrame) -> tuple[str, list[str]]:
+    notes = []
+    # Very basic candlestick pattern: bullish/bearish engulfing
+    o, h, l, c = [df[x].iloc[-2:] for x in ["Open", "High", "Low", "Close"]]
+    bullish_engulfing = (c.iloc[0] < o.iloc[0]) and (c.iloc[1] > o.iloc[1]) and (o.iloc[1] < c.iloc[0]) and (c.iloc[1] > o.iloc[0])
+    bearish_engulfing = (c.iloc[0] > o.iloc[0]) and (c.iloc[1] < o.iloc[1]) and (o.iloc[1] > c.iloc[0]) and (c.iloc[1] < o.iloc[0])
+    action = "HOLD"
+    if bullish_engulfing:
+        action = "BUY"; notes.append("Bullish engulfing")
+    elif bearish_engulfing:
+        action = "SELL"; notes.append("Bearish engulfing")
+    # Support/Resistance (rough pivot)
+    last_close = float(df['Close'].iloc[-1])
+    pivot = (float(h.iloc[0]) + float(l.iloc[0]) + float(c.iloc[0])) / 3
+    if last_close > pivot: notes.append("Above pivot")
+    else: notes.append("Below pivot")
+    return action, notes

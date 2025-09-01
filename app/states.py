@@ -1,6 +1,8 @@
-from aiogram.fsm.state import StatesGroup, State
+from aiogram.dispatcher.filters.state import StatesGroup, State
 
-class Dialog(StatesGroup):
-    choose_mode = State()       # technical / indicators
-    choose_market = State()     # FIN / OTC
-    choose_pair = State()       # currency pair
+class ForecastStates(StatesGroup):
+    Language = State()
+    Mode = State()         # indicators | ta
+    Category = State()     # fin | otc
+    Pair = State()         # EUR/USD ...
+    Timeframe = State()    # 15s,30s,1m,5m,15m,1h

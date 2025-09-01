@@ -1,25 +1,35 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
-from .pairs import ACTIVE_FIN, ACTIVE_OTC
 
-def start_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="📊 Тех. анализ")
-    kb.button(text="📈 Индикаторы")
-    kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True, one_time_keyboard=True)
+def lang_keyboard():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("RU"), KeyboardButton("EN"))
+    return kb
 
-def market_kb() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="💰 ACTIVE FIN")
-    kb.button(text="⏱️ ACTIVE OTC")
-    kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True)
+def mode_keyboard(lang):
+    d = {"ru": ["📊 Технический анализ", "📈 Индикаторы"],
+         "en": ["📊 Technical analysis", "📈 Indicators"]}
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    for it in d["ru" if lang=="ru" else "en"]:
+        kb.add(KeyboardButton(it))
+    return kb
 
-def pairs_kb(market: str) -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardBuilder()
-    items = ACTIVE_FIN if market == "FIN" else ACTIVE_OTC
-    for p in items:
-        kb.row(KeyboardButton(text=p))
-    kb.row(KeyboardButton(text="⬅️ Назад"))
-    return kb.as_markup(resize_keyboard=True)
+def category_keyboard(lang):
+    d = {"ru": ["💰 ACTIVE FIN", "⏱️ ACTIVE OTC"],
+         "en": ["💰 ACTIVE FIN", "⏱️ ACTIVE OTC"]}
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    for it in d["ru" if lang=="ru" else "en"]:
+        kb.add(KeyboardButton(it))
+    return kb
+
+def pairs_keyboard(pairs):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    for name in pairs.keys():
+        kb.add(KeyboardButton(name))
+    return kb
+
+def timeframe_keyboard(lang):
+    lbl = ["15s","30s","1m","5m","15m","1h"]
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    for it in lbl:
+        kb.add(KeyboardButton(it))
+    return kb

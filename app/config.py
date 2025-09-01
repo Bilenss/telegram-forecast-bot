@@ -1,25 +1,12 @@
-from __future__ import annotations
 import os
-from dataclasses import dataclass
 
-def _parse_bool(v: str | None, default: bool = False) -> bool:
-    if v is None:
-        return default
-    v = str(v).strip().lower()
-    return v in {"1", "true", "yes", "on", "y"}
-
-@dataclass
-class Settings:
-    telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
-    timeframe: str = os.getenv("PAIR_TIMEFRAME", "5m")
-    cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "60"))
-    po_enable_scrape: bool = _parse_bool(os.getenv("PO_ENABLE_SCRAPE"), False)
-
-    # используем отдельную переменную только для Playwright
-    po_proxy: str | None = os.getenv("PO_PROXY") or None
-
-    # оставим совместимость, но НЕ используем их в коде
-    http_proxy: str | None = os.getenv("HTTP_PROXY") or None
-    https_proxy: str | None = os.getenv("HTTPS_PROXY") or None
-
-settings = Settings()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+DEFAULT_LANG = os.getenv("DEFAULT_LANG", "ru")
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "60"))
+PO_ENABLE_SCRAPE = int(os.getenv("PO_ENABLE_SCRAPE", "1"))
+PO_PROXY = os.getenv("PO_PROXY", "")  # http://user:pass@host:port or empty
+ALPHAVANTAGE_KEY = os.getenv("ALPHAVANTAGE_KEY", "")
+PAIR_TIMEFRAME = os.getenv("PAIR_TIMEFRAME", "15m")  # default
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+ENABLE_CHARTS = int(os.getenv("ENABLE_CHARTS", "1"))
+TMP_DIR = os.getenv("TMP_DIR", "/tmp")

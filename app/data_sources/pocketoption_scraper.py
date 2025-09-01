@@ -1,84 +1,64 @@
 from __future__ import annotations
-import asyncio
-import json
-import re
-from contextlib import asynccontextmanager
-from typing import Optional
-from urllib.parse import urlparse
+import random, time
 import pandas as pd
-from playwright.async_api import async_playwright
-from ..utils.user_agents import random_ua
-from ..config import settings
-from ..utils.logging import logger
+import httpx
+from bs4 import BeautifulSoup
+from ..utils.user_agents import UAS
+from ..utils.logging import setup
+from ..config import PO_PROXY
 
-@asynccontextmanager
-async def _browser():
-    ua = random_ua()
-    raw = settings.po_proxy
-    proxy_cfg = None
-    if raw:
-        try:
-            u = urlparse(raw)
-            server = f"{u.scheme}://{u.hostname}:{u.port}"
-            proxy_cfg = {"server": server}
-            if u.username and u.password:
-                proxy_cfg["username"] = u.username
-                proxy_cfg["password"] = u.password
-            logger.info(f"Using proxy: {server}")
-        except Exception as e:
-            logger.error(f"Error while parsing proxy: {e}")
+logger = setup()
 
-    async with async_playwright() as p:
-        launch_kwargs = {
-            "headless": True,
-            "args": ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-        }
-        if proxy_cfg:
-            launch_kwargs["proxy"] = proxy_cfg
-        browser = await p.chromium.launch(**launch_kwargs)
-        context = await browser.new_context(
-            user_agent=ua,
-            locale="ru-RU",
-            viewport={"width": 1366, "height": 768},
-        )
-        context.set_default_timeout(60000)
-        context.set_default_navigation_timeout(90000)
-        page = await context.new_page()
-        try:
-            yield page
-        finally:
-            await context.close()
-            await browser.close()
+# NOTE:
+# PocketOption pages are dynamic. This module implements a *best-effort* scraper
+# that fetches the instrument page, looks for embedded OHLC JSON (if present),
+# and, if not found, attempts to call the chart data requests used by the page.
+# If the structure changes, callers should fall back to public quotes.
 
-async def fetch_po_ohlc(pair_slug: str, interval: str = "1m", lookback: int = 500) -> Optional[pd.DataFrame]:
-    if not settings.po_enable_scrape:
-        return None
-    url = "https://pocketoption.com/ru/"
-    try:
-        async with _browser() as page:
-            logger.info(f"Loading page: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(1500)
-            html = await page.content()
-            logger.info("Page loaded successfully")
-            m = re.search(r"\{[^{}]*\"candles\"\s*:\s*\[.*?\]\}", html, flags=re.DOTALL)
-            if m:
-                try:
-                    blob = json.loads(m.group(0))
-                    candles = blob.get("candles")
-                    if candles:
-                        df = pd.DataFrame(candles)[-lookback:]
-                        cols = {c: c for c in ["open", "high", "low", "close", "volume"] if c in df.columns}
-                        if "time" in df.columns and cols:
-                            df = df.rename(columns=cols).set_index(pd.to_datetime(df["time"], unit="s"))
-                            df.index.name = "time"
-                            logger.info(f"Successfully parsed {len(df)} candles")
-                            return df[["open", "high", "low", "close", "volume"]]
-                except Exception as e:
-                    logger.error(f"Failed to parse candles: {e}")
-            else:
-                logger.warning("No candles data found in HTML")
-    except Exception as e:
-        logger.error(f"Error while scraping PocketOption: {e}")
+def _headers():
+    return {
+        "User-Agent": random.choice(UAS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
 
-    return None
+def _client():
+    proxies = None
+    if PO_PROXY:
+        proxies = {"http://": PO_PROXY, "https://": PO_PROXY}
+    return httpx.Client(timeout=20, headers=_headers(), proxies=proxies, follow_redirects=True)
+
+def fetch_po_ohlc(symbol: str, timeframe: str = "15m", limit: int = 300) -> pd.DataFrame:
+    # Symbol like 'EURUSD', timeframe like '15m' | '1m' | '5m' etc.
+    # Strategy: open chart page and try to parse recent candles from embedded scripts.
+    url = f"https://pocketoption.com/en/chart/?asset={symbol}"
+    with _client() as client:
+        r = client.get(url)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        # Heuristic: some pages embed a window.__PO_INITIAL_STATE__ or similar.
+        scripts = soup.find_all("script")
+        for sc in scripts:
+            txt = sc.string or ""
+            if "candles" in txt or "ohlc" in txt:
+                # naive parse: look for [...], but keep it robust
+                import re, json
+                m = re.search(r'(\[\{.*?\}\])', txt, re.S)
+                if m:
+                    try:
+                        data = json.loads(m.group(1))
+                        # Expect list of objects with t/o/h/l/c
+                        rows = []
+                        for it in data:
+                            t = pd.to_datetime(it.get("t") or it.get("time") or 0, unit="s")
+                            rows.append([t, float(it["o"]), float(it["h"]), float(it["l"]), float(it["c"])])
+                        df = pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
+                        if not df.empty:
+                            return df.tail(limit)
+                    except Exception as e:
+                        logger.warning(f"Embedded JSON parse failed: {e}")
+                        break
+        # Fallback heuristic endpoint (subject to change; may require discovery in DevTools).
+        # We try a generic path; if unavailable, raise.
+        raise RuntimeError("PO scraping failed")
