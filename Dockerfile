@@ -1,26 +1,18 @@
-# База с уже предустановленными библиотеками и браузерами Playwright
-FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+FROM python:3.11-slim
 
-# Быстрые и предсказуемые сборки
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Рабочая папка
+RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     libfreetype6-dev     libpng-dev     libjpeg-dev     && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+COPY app/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Сначала зависимости (кэш слоёв эффективнее)
-COPY app/requirements.txt /app/app/requirements.txt
+COPY app /app
 
-# Устанавливаем зависимости без прокси
-RUN HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    pip install --no-cache-dir -r /app/app/requirements.txt
+# Default timezone/locale can be customized at runtime.
+ENV TZ=Etc/UTC
+ENV PORT=8080
 
-# Копируем код проекта
-COPY . /app
-
-# Устанавливаем браузеры Playwright без прокси
-RUN HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= \
-    playwright install --with-deps chromium
-
-# Точка входа
 CMD ["python", "-m", "app.main"]
