@@ -114,7 +114,7 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
     await m.answer("Готовлю данные..." if lang == 'ru' else "Fetching data...")
 
     try:
-        df = _fetch_ohlc(info, timeframe)
+        df = await asyncio.to_thread(_fetch_ohlc, info, timeframe)
     except Exception as e:
         if info.get("otc"):
             msg_ru = ("OTC-пары доступны только на платформе PocketOption. "
