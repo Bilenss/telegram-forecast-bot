@@ -28,10 +28,11 @@ def _client():
     return httpx.Client(timeout=25, headers=_headers(), proxies=proxies, follow_redirects=True)
 
 def _asset_candidates(symbol: str, otc: bool):
-    base = symbol.upper()
+    base = symbol.upper().replace(" ", "").replace("/", "")
     cands = [base]
     if otc:
-        cands += [f"{base}_OTC", f"{base}-OTC", f"{base}OTC", f"{base}_otc", f"{base}-otc", f"{base}otc"]
+        cands += [f"{base}_OTC", f"{base}-OTC", f"{base}OTC",
+                  f"{base}_otc", f"{base}-otc", f"{base}otc"]
     seen, out = set(), []
     for s in cands:
         if s not in seen:
@@ -51,15 +52,15 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
             h = it.get("h") or it.get("high")
             l = it.get("l") or it.get("low")
             c = it.get("c") or it.get("close")
-            if None in (t,o,h,l,c):
+            if None in (t, o, h, l, c):
                 continue
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t,(int,float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts): 
+            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         if not rows:
             return None
-        return pd.DataFrame(rows, columns=["time","Open","High","Low","Close"]).set_index("time")
+        return pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
     except Exception:
         return None
 
@@ -81,23 +82,25 @@ def _try_static(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame |
                         return df.tail(limit)
             except httpx.HTTPError as e:
                 logger.debug(f"PO[static] failed {url}: {e}")
-            time.sleep(random.uniform(0.2,0.5))
+            time.sleep(random.uniform(0.2, 0.5))
     return None
 
 def _collect_from_json_object(obj, rows: list):
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
-            if {"o","h","l","c"}.issubset(keys) or {"open","high","low","close"}.issubset(keys):
+            if {"o", "h", "l", "c"}.issubset(keys) or {"open", "high", "low", "close"}.issubset(keys):
                 return x
         if isinstance(x, dict):
             for v in x.values():
                 r = find_list(v)
-                if r is not None: return r
+                if r is not None:
+                    return r
         if isinstance(x, list):
             for v in x:
                 r = find_list(v)
-                if r is not None: return r
+                if r is not None:
+                    return r
         return None
 
     items = find_list(obj)
@@ -110,8 +113,8 @@ def _collect_from_json_object(obj, rows: list):
         l = it.get("l") or it.get("low")
         c = it.get("c") or it.get("close")
         try:
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t,(int,float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts): 
+            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         except Exception:
@@ -136,27 +139,18 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
             user_agent=random.choice(UAS),
             locale="en-US",
             timezone_id="UTC",
-            viewport={"width":1280,"height":800},
+            viewport={"width": 1280, "height": 800},
         )
-        # скрываем webdriver-след
         context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-
-        # блокируем тяжёлые ресурсы
-        def route_handler(route):
-            r = route.request
-            if r.resource_type in ("image","font","stylesheet","media"):
-                return route.abort()
-            return route.continue_()
-        context.route("**/*", route_handler)
-
+        context.route("**/*", lambda route: route.abort() if route.request.resource_type in ("image", "font", "stylesheet", "media") else route.continue_())
         page = context.new_page()
 
         def on_response(resp):
-            ctype = (resp.headers or {}).get("content-type","").lower()
+            ctype = (resp.headers or {}).get("content-type", "").lower()
             if "application/json" not in ctype:
                 return
             url = resp.url.lower()
-            if any(k in url for k in ["candle","candles","ohlc","history","chart","series","timeseries"]):
+            if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
                 try:
                     j = resp.json()
                     _collect_from_json_object(j, rows)
@@ -172,23 +166,18 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
                 logger.debug(f"PO[pw] goto {url}")
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
                 page.wait_for_load_state("networkidle", timeout=20000)
-                # подождём доп. XHR/WS
                 page.wait_for_timeout(5000)
 
-                # если ещё нет — попробуем вынуть из window/* и localStorage
                 if not rows:
                     try:
-                        js = """
-                        (() => {
+                        obj = page.evaluate("""(() => {
                           const bag = {};
                           for (const k of Object.getOwnPropertyNames(window)) {
                             if (!k || k.startsWith('_')) continue;
                             try { bag[k] = window[k]; } catch(e){}
                           }
                           return bag;
-                        })()
-                        """
-                        obj = page.evaluate(js)
+                        })()""")
                         _collect_from_json_object(obj, rows)
                     except Exception:
                         pass
@@ -221,7 +210,7 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
     if not rows:
         return None
 
-    df = (pd.DataFrame(rows, columns=["time","Open","High","Low","Close"])
+    df = (pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
           .dropna()
           .drop_duplicates(subset=["time"])
           .sort_values("time")
@@ -236,12 +225,19 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         "https://pocketoption.com/en/chart-new/?asset={asset}",
         "https://pocketoption.com/ru/chart-new/?asset={asset}",
     ]
-    for asset in _asset_candidates(symbol, otc=otc):
+
+    candidates = _asset_candidates(symbol, otc=otc)
+    logger.debug(f"PO candidates: {candidates}")
+
+    for asset in candidates:
         logger.debug(f"PO try asset={asset}")
+
         df = _try_static(asset, base_paths, limit)
         if df is not None and not df.empty:
             return df
+
         df = _try_playwright(asset, base_paths, limit)
         if df is not None and not df.empty:
             return df
+
     raise RuntimeError("PO scraping failed (no candles found)")
