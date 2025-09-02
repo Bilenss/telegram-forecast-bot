@@ -1,14 +1,18 @@
 from __future__ import annotations
 import random, time, json, re
+from urllib.parse import urlparse
+
 import pandas as pd
 import httpx
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+
 from ..utils.user_agents import UAS
 from ..utils.logging import setup
 from ..config import PO_PROXY
 
 logger = setup()
+
 
 def _headers():
     return {
@@ -21,23 +25,43 @@ def _headers():
         "Referer": "https://pocketoption.com/",
     }
 
+
 def _client():
     proxies = None
     if PO_PROXY:
         proxies = {"http://": PO_PROXY, "https://": PO_PROXY}
     return httpx.Client(timeout=25, headers=_headers(), proxies=proxies, follow_redirects=True)
 
+
+def _pw_proxy():
+    if not PO_PROXY:
+        return None
+    u = urlparse(PO_PROXY)
+    if not u.scheme or not u.hostname:
+        return {"server": PO_PROXY}
+    proxy = {"server": f"{u.scheme}://{u.hostname}:{u.port}"}
+    if u.username:
+        proxy["username"] = u.username
+    if u.password:
+        proxy["password"] = u.password
+    return proxy
+
+
 def _asset_candidates(symbol: str, otc: bool):
     base = symbol.upper().replace(" ", "").replace("/", "")
     cands = [base]
     if otc:
-        cands += [f"{base}_OTC", f"{base}-OTC", f"{base}OTC",
-                  f"{base}_otc", f"{base}-otc", f"{base}otc"]
+        cands += [
+            f"{base}_OTC", f"{base}-OTC", f"{base}OTC",
+            f"OTC_{base}", f"OTC-{base}", f"OTC{base}",
+            f"{base}_otc", f"{base}-otc", f"{base}otc"
+        ]
     seen, out = set(), []
     for s in cands:
         if s not in seen:
             seen.add(s); out.append(s)
     return out
+
 
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
     try:
@@ -64,6 +88,7 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
     except Exception:
         return None
 
+
 def _try_static(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame | None:
     with _client() as client:
         for tpl in base_paths:
@@ -84,6 +109,7 @@ def _try_static(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame |
                 logger.debug(f"PO[static] failed {url}: {e}")
             time.sleep(random.uniform(0.2, 0.5))
     return None
+
 
 def _collect_from_json_object(obj, rows: list):
     def find_list(x):
@@ -120,6 +146,7 @@ def _collect_from_json_object(obj, rows: list):
         except Exception:
             continue
 
+
 def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame | None:
     rows: list[list] = []
 
@@ -132,8 +159,11 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
                 "--disable-blink-features=AutomationControlled"
             ],
         }
-        if PO_PROXY:
-            launch_kwargs["proxy"] = {"server": PO_PROXY}
+        pwp = _pw_proxy()
+        if pwp:
+            launch_kwargs["proxy"] = pwp
+            logger.debug(f"PO[pw] using proxy: {pwp.get('server')}")
+
         browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             user_agent=random.choice(UAS),
@@ -218,6 +248,7 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
           .tail(limit))
     return df if not df.empty else None
 
+
 def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
     base_paths = [
         "https://pocketoption.com/en/chart/?asset={asset}",
@@ -232,12 +263,18 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
     for asset in candidates:
         logger.debug(f"PO try asset={asset}")
 
+        # 1) Static HTML
         df = _try_static(asset, base_paths, limit)
         if df is not None and not df.empty:
             return df
 
-        df = _try_playwright(asset, base_paths, limit)
-        if df is not None and not df.empty:
-            return df
+        # 2) Playwright (не падаем, если крашится)
+        try:
+            df = _try_playwright(asset, base_paths, limit)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            logger.warning(f"PO[pw] fatal on {asset}: {type(e).__name__}: {e}")
+            continue
 
     raise RuntimeError("PO scraping failed (no candles found)")
