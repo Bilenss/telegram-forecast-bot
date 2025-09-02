@@ -9,9 +9,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-from ..utils.user_agents import UAS
-from ..utils.logging import setup
-from ..config import (
+from .utils.user_agents import UAS
+from .utils.logging import setup
+from .config import (
     PO_PROXY, PO_SCRAPE_DEADLINE, PO_PROXY_FIRST,
     PO_NAV_TIMEOUT_MS, PO_IDLE_TIMEOUT_MS,
     PO_WAIT_EXTRA_MS, PO_HTTPX_TIMEOUT,
