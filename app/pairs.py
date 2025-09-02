@@ -9,9 +9,10 @@ PAIRS_FIN = {
     "USD/CHF": {"po": "USDCHF", "yf": "CHF=X"},
 }
 
-# OTC pairs map to the same underlying but labelled OTC for UI grouping.
+# OTC pairs map to the same underlying symbol, but with a different flag and no fallback (yf = None).
 PAIRS_OTC = {
-    k + " OTC": v | {"otc": True} for k, v in PAIRS_FIN.items()
+    k + " OTC": {"po": v["po"], "yf": None, "otc": True}
+    for k, v in PAIRS_FIN.items()
 }
 
 def all_pairs(category: str):
