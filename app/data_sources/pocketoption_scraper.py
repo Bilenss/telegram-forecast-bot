@@ -11,8 +11,8 @@ from ..config import PO_PROXY
 
 logger = setup()
 
-# Общий лимит времени на попытку скрапинга (сек)
-PO_SCRAPE_DEADLINE = int(os.getenv("PO_SCRAPE_DEADLINE", "28"))
+# 🔧 Быстрый дедлайн: чтобы укладываться в 35 сек таймаута бота
+PO_SCRAPE_DEADLINE = int(os.getenv("PO_SCRAPE_DEADLINE", "24"))  # было "28"
 
 def _headers():
     return {
@@ -26,11 +26,9 @@ def _headers():
     }
 
 def _client():
-    proxies = None
-    if PO_PROXY:
-        proxies = {"http://": PO_PROXY, "https://": PO_PROXY}
-    # маленький таймаут, чтобы не висеть на «молчащем» прокси
-    return httpx.Client(timeout=7, headers=_headers(), proxies=proxies, follow_redirects=True)
+    proxies = {"http://": PO_PROXY, "https://": PO_PROXY} if PO_PROXY else None
+    # 🔧 уменьшили таймаут с 7 до 3
+    return httpx.Client(timeout=3, headers=_headers(), proxies=proxies, follow_redirects=True)
 
 def _pw_proxy():
     if not PO_PROXY:
@@ -182,7 +180,7 @@ def _playwright_attempt(asset: str, base_paths: list[str], limit: int, deadline_
                 logger.debug(f"PO[pw] goto {url}")
                 page.goto(url, wait_until="domcontentloaded", timeout=12000)
                 page.wait_for_load_state("networkidle", timeout=8000)
-                page.wait_for_timeout(6000)  # даём добежать XHR/WS
+                page.wait_for_timeout(6000)
                 if rows: 
                     break
             except Exception as e:
@@ -199,13 +197,11 @@ def _playwright_attempt(asset: str, base_paths: list[str], limit: int, deadline_
     return df if not df.empty else None
 
 def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
-    # 1) попытка через прокси (если задан)
     if PO_PROXY and time.time() <= deadline_at:
         df = _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy=True)
         if df is not None and not df.empty:
             return df
         logger.debug("PO[pw] proxy attempt failed, trying direct...")
-    # 2) попытка без прокси
     if time.time() <= deadline_at:
         return _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy=False)
     return None
@@ -226,12 +222,21 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
             break
         logger.debug(f"PO try asset={asset}")
 
-        df = _try_static(asset, base_paths, limit, deadline_at)
-        if df is not None and not df.empty:
-            return df
-
-        df = _try_playwright(asset, base_paths, limit, deadline_at)
-        if df is not None and not df.empty:
-            return df
+        if otc:
+            # ✅ OTC: сначала Playwright, потом быстрая статика
+            df = _try_playwright(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+            df = _try_static(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+        else:
+            # FIN: как раньше — сначала статика, потом PW
+            df = _try_static(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+            df = _try_playwright(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
 
     raise RuntimeError("PO scraping failed (no candles found)")
