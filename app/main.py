@@ -1,302 +1,184 @@
 from __future__ import annotations
-import random
-import time
-import json
-import re
-import pandas as pd
-import httpx
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+import asyncio
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
 
-from .utils.user_agents import UAS
+from .config import TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS, PO_ENABLE_SCRAPE, ENABLE_CHARTS, LOG_LEVEL
+from .states import ForecastStates as ST
+from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
+from .utils.cache import TTLCache
 from .utils.logging import setup
-from .config import (
-    PO_PROXY, PO_SCRAPE_DEADLINE, PO_PROXY_FIRST,
-    PO_NAV_TIMEOUT_MS, PO_IDLE_TIMEOUT_MS,
-    PO_WAIT_EXTRA_MS, PO_HTTPX_TIMEOUT,
-    PO_BROWSER_ORDER
-)
+from .pairs import all_pairs
+from .analysis.indicators import compute_indicators
+from .analysis.decision import signal_from_indicators, simple_ta_signal
+from .data_sources.pocketoption_scraper import fetch_po_ohlc
+from .data_sources.fallback_quotes import fetch_public_ohlc
 
-logger = setup()
+logger = setup(LOG_LEVEL)
 
-def _headers():
-    return {
-        "User-Agent": random.choice(UAS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-        "Connection": "keep-alive",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-        "Referer": "https://pocketoption.com/",
-    }
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
-def _client():
-    proxies = {"http://": PO_PROXY, "https://": PO_PROXY} if PO_PROXY else None
-    return httpx.Client(
-        timeout=PO_HTTPX_TIMEOUT,
-        headers=_headers(),
-        proxies=proxies,
-        follow_redirects=True
-    )
+INTRO_RU = "Привет! Я бот прогнозов. Выберите язык."
+INTRO_EN = "Hello! I am a forecasts bot. Choose language."
 
-def _pw_proxy():
-    if not PO_PROXY:
-        return None
-    u = urlparse(PO_PROXY)
-    if not u.scheme or not u.hostname:
-        return {"server": PO_PROXY}
-    p = {"server": f"{u.scheme}://{u.hostname}:{u.port}"}
-    if u.username:
-        p["username"] = u.username
-    if u.password:
-        p["password"] = u.password
-    return p
+# -------------------- helpers --------------------
 
-def _pw_launch_kwargs(use_proxy: bool):
-    kw = {
-        "headless": True,
-        "args": [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled"
-        ]
-    }
-    if use_proxy:
-        prox = _pw_proxy()
-        if prox:
-            kw["proxy"] = prox
-            logger.debug(f"PO[pw] using proxy: {prox.get('server')}")
-    return kw
+def _cache_key(pair_info: dict, timeframe: str) -> str:
+    return f"{pair_info.get('po','')}:{timeframe}"
 
-def _asset_candidates(symbol: str, otc: bool):
-    base = symbol.upper().replace(" ", "").replace("/", "")
-    cands = [base]
-    if otc:
-        cands += [
-            f"{base}_OTC", f"{base}-OTC", f"{base}OTC",
-            f"OTC_{base}", f"OTC-{base}", f"OTC{base}",
-            f"{base}_otc", f"{base}-otc", f"{base}otc",
-        ]
-    seen, out = set(), []
-    for s in cands:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+def _fetch_ohlc_sync(pair_info: dict, timeframe: str):
+    """Синхронный сбор данных: OTC только PO, FIN — PO → public fallback."""
+    ck = _cache_key(pair_info, timeframe)
+    df = cache.get(ck)
+    if df is not None:
+        return df
 
-def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
-    try:
-        m = re.search(r'\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]', text, re.S)
-        if not m:
-            return None
-        data = json.loads(m.group(0))
-        rows = []
-        for it in data:
-            t = it.get("t") or it.get("time") or it.get("timestamp")
-            o = it.get("o") or it.get("open")
-            h = it.get("h") or it.get("high")
-            l = it.get("l") or it.get("low")
-            c = it.get("c") or it.get("close")
-            if None in (t, o, h, l, c):
-                continue
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts):
-                continue
-            rows.append([ts, float(o), float(h), float(l), float(c)])
-        if not rows:
-            return None
-        return pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
-    except Exception:
-        return None
+    is_otc = bool(pair_info.get("otc", False))
 
-def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
-    with _client() as client:
-        for tpl in base_paths:
-            if time.time() > deadline_at:
-                return None
-            url = tpl.format(asset=asset)
-            try:
-                r = client.get(url)
-                logger.debug(f"PO[static] GET {url} -> {r.status_code}")
-                if r.status_code == 404:
-                    continue
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, "html.parser")
-                for sc in soup.find_all("script"):
-                    txt = sc.string or sc.text or ""
-                    df = _parse_embedded_candles(txt)
-                    if df is not None and not df.empty:
-                        return df.tail(limit)
-            except httpx.HTTPError as e:
-                logger.debug(f"PO[static] failed {url}: {e}")
-            time.sleep(0.3)
-    return None
+    if is_otc:
+        if not PO_ENABLE_SCRAPE:
+            raise RuntimeError("OTC requires PocketOption scraping (PO_ENABLE_SCRAPE=1)")
+        df = fetch_po_ohlc(pair_info["po"], timeframe=timeframe, otc=True)
+        cache.set(ck, df)
+        return df
 
-def _collect_from_json_object(obj, rows: list):
-    def find_list(x):
-        if isinstance(x, list) and x and isinstance(x[0], dict):
-            keys = set(map(str.lower, x[0].keys()))
-            if {"o", "h", "l", "c"}.issubset(keys) or {"open", "high", "low", "close"}.issubset(keys):
-                return x
-        if isinstance(x, dict):
-            for v in x.values():
-                r = find_list(v)
-                if r is not None:
-                    return r
-        if isinstance(x, list):
-            for v in x:
-                r = find_list(v)
-                if r is not None:
-                    return r
-        return None
-
-    items = find_list(obj)
-    if not items:
-        return
-    for it in items:
-        t = it.get("t") or it.get("time") or it.get("timestamp")
-        o = it.get("o") or it.get("open")
-        h = it.get("h") or it.get("high")
-        l = it.get("l") or it.get("low")
-        c = it.get("c") or it.get("close")
+    # FIN
+    if PO_ENABLE_SCRAPE:
         try:
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts):
-                continue
-            rows.append([ts, float(o), float(h), float(l), float(c)])
-        except Exception:
-            continue
-
-def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool):
-    rows = []
-    launcher = getattr(pw, browser_name)
-    browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
-    context = browser.new_context(
-        user_agent=random.choice(UAS),
-        locale="en-US",
-        timezone_id="UTC",
-        viewport={"width": 1280, "height": 800},
-    )
-    context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-    context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
-    page = context.new_page()
-
-    def on_response(resp):
-        ct = (resp.headers or {}).get("content-type", "").lower()
-        if "application/json" not in ct:
-            return
-        url = resp.url.lower()
-        if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
-            try:
-                _collect_from_json_object(resp.json(), rows)
-                logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
-            except Exception as e:
-                logger.debug(f"PO[pw][{browser_name}] JSON parse fail {url}: {e}")
-    page.on("response", on_response)
-
-    for tpl in base_paths:
-        if time.time() > deadline_at:
-            break
-        url = tpl.format(asset=asset)
-        try:
-            logger.debug(f"PO[pw][{browser_name}] goto {url}")
-            page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
-            except Exception:
-                pass
-            page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
-            page.wait_for_timeout(PO_WAIT_EXTRA_MS)
-            if rows:
-                break
-        except PWTimeout as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation timeout {url}: {e}")
+            df = fetch_po_ohlc(pair_info["po"], timeframe=timeframe, otc=False)
+            cache.set(ck, df)
+            return df
         except Exception as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
+            logger.debug(f"PO scraping failed: {e}")
 
-    context.close()
-    browser.close()
-    if not rows:
-        return None
-    df = (pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
-          .dropna().drop_duplicates(subset=["time"]).sort_values("time").set_index("time").tail(limit))
-    return df if not df.empty else None
+    df = fetch_public_ohlc(pair_info["yf"], timeframe=timeframe)
+    cache.set(ck, df)
+    return df
 
-def _try_playwright(asset, base_paths, limit, deadline_at):
-    browser_order = [b.strip() for b in PO_BROWSER_ORDER.split(",") if b.strip()]
-    direct_first = not PO_PROXY_FIRST
-    proxy_order = ([False, True] if direct_first else [True, False])
+# -------------------- handlers --------------------
 
-    with sync_playwright() as pw:
-        for use_proxy in proxy_order:
-            for bname in browser_order:
-                if time.time() > deadline_at:
-                    return None
-                df = _playwright_attempt_with_browser(pw, bname, asset, base_paths, limit, deadline_at, use_proxy)
-                if df is not None and not df.empty:
-                    logger.debug(f"PO[pw] success via {'proxy' if use_proxy else 'direct'} on {bname}")
-                    return df
-                logger.debug(f"PO[pw] attempt failed on {bname} ({'proxy' if use_proxy else 'direct'})")
-    return None
+@dp.message_handler(commands=['start'])
+async def cmd_start(m: types.Message, state: FSMContext):
+    await state.finish()
+    await m.answer(INTRO_RU if DEFAULT_LANG == 'ru' else INTRO_EN, reply_markup=lang_keyboard())
+    await ST.Language.set()
 
-def scrape_po(symbol: str, limit: int = 150, otc: bool = False) -> pd.DataFrame | None:
-    deadline_at = time.time() + PO_SCRAPE_DEADLINE
-    cands = _asset_candidates(symbol, otc)
-    base_paths = [
-        "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
-        "https://pocketoption.com/en/cabinet/trade/{asset}/",
-        "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
-        "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
-    ]
-    for asset in cands:
-        df = _try_static(asset, base_paths, limit, deadline_at)
-        if df is not None and not df.empty:
-            return df
-        df = _try_playwright(asset, base_paths, limit, deadline_at)
-        if df is not None and not df.empty:
-            return df
-    return None
+@dp.message_handler(lambda m: m.text in ["RU", "EN"], state=ST.Language)
+async def lang_selected(m: types.Message, state: FSMContext):
+    lang = 'ru' if m.text == "RU" else 'en'
+    await state.update_data(lang=lang)
+    text = "Выберите режим анализа:" if lang == 'ru' else "Choose analysis mode:"
+    await m.answer(text, reply_markup=mode_keyboard(lang))
+    await ST.Mode.set()
 
-# Явно экспортируемое API этого модуля
-__all__ = ["fetch_po_ohlc"]
+@dp.message_handler(lambda m: m.text in ["📊 Технический анализ", "📈 Индикаторы", "📊 Technical analysis", "📈 Indicators"], state=ST.Mode)
+async def mode_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang", "ru")
+    mode = "ta" if "Техничес" in m.text or "Technical" in m.text else "ind"
+    await state.update_data(mode=mode)
+    text = "Выберите категорию актива:" if lang == 'ru' else "Choose asset category:"
+    await m.answer(text, reply_markup=category_keyboard(lang))
+    await ST.Category.set()
 
-def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False):
-    """
-    Главная точка входа для получения свечей с PocketOption.
-    Вызывается из app/main.py. Ничего больше отсюда импортировать не нужно.
-    """
-    base_paths = [
-        "https://pocketoption.com/en/chart/?asset={asset}",
-        "https://pocketoption.com/ru/chart/?asset={asset}",
-        "https://pocketoption.com/en/chart-new/?asset={asset}",
-        "https://pocketoption.com/ru/chart-new/?asset={asset}",
-    ]
+@dp.message_handler(lambda m: m.text in ["💰 ACTIVE FIN", "⏱️ ACTIVE OTC"], state=ST.Category)
+async def category_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang", "ru")
+    category = "fin" if "FIN" in m.text else "otc"
+    await state.update_data(category=category)
+    pairs = all_pairs(category)
+    text = "Выберите валютную пару:" if lang == 'ru' else "Choose a pair:"
+    await m.answer(text, reply_markup=pairs_keyboard(pairs))
+    await ST.Pair.set()
 
-    deadline_at = time.time() + PO_SCRAPE_DEADLINE
-    candidates = _asset_candidates(symbol, otc=otc)
-    logger.debug(f"PO candidates: {candidates}")
+@dp.message_handler(state=ST.Pair)
+async def pair_selected(m: types.Message, state: FSMContext):
+    lang = (await state.get_data()).get("lang", "ru")
+    category = (await state.get_data()).get("category", "fin")
+    pairs = all_pairs(category)
+    if m.text not in pairs:
+        await m.answer("Пожалуйста, выберите из клавиатуры." if lang == 'ru' else "Please use the keyboard.")
+        return
+    await state.update_data(pair=m.text)
+    text = "Выберите таймфрейм:" if lang == 'ru' else "Select timeframe:"
+    await m.answer(text, reply_markup=timeframe_keyboard(lang, po_available=bool(PO_ENABLE_SCRAPE)))
+    await ST.Timeframe.set()
 
-    for asset in candidates:
-        if time.time() > deadline_at:
-            break
-        logger.debug(f"PO try asset={asset}")
+@dp.message_handler(state=ST.Timeframe)
+async def timeframe_selected(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    category = data.get("category", "fin")
+    mode = data.get("mode", "ind")
+    pair_name = data.get("pair")
+    pairs = all_pairs(category)
+    info = pairs[pair_name]
+    timeframe = m.text.strip()
 
-        if otc:
-            # OTC: сперва Playwright, затем быстрая статика
-            df = _try_playwright(asset, base_paths, limit, deadline_at)
-            if df is not None and not df.empty:
-                return df
-            df = _try_static(asset, base_paths, limit, deadline_at)
-            if df is not None and not df.empty:
-                return df
+    await m.answer("Готовлю данные..." if lang == 'ru' else "Fetching data...")
+
+    # выполняем блокирующий скрапинг в отдельном потоке + общий таймаут
+    try:
+        df = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_ohlc_sync, info, timeframe),
+            timeout=35
+        )
+    except asyncio.TimeoutError:
+        msg_ru = ("Истек таймаут получения данных с PocketOption. Попробуйте другой таймфрейм или позже, "
+                  "либо выберите категорию 💰 ACTIVE FIN.")
+        msg_en = ("Timed out fetching data from PocketOption. Try another timeframe or later, "
+                  "or choose 💰 ACTIVE FIN.")
+        await m.answer(msg_ru if lang == 'ru' else msg_en)
+        await state.finish()
+        return
+    except Exception as e:
+        if info.get("otc"):
+            msg_ru = ("OTC-пары доступны только на платформе PocketOption. Сейчас не удалось получить данные. "
+                      "Попробуйте другой таймфрейм или позже, либо выберите категорию 💰 ACTIVE FIN.")
+            msg_en = ("OTC pairs are available only on PocketOption. Failed to fetch data now. "
+                      "Try another timeframe or later, or choose 💰 ACTIVE FIN.")
+            await m.answer(msg_ru if lang == 'ru' else msg_en)
         else:
-            # FIN: сперва статика, затем Playwright
-            df = _try_static(asset, base_paths, limit, deadline_at)
-            if df is not None and not df.empty:
-                return df
-            df = _try_playwright(asset, base_paths, limit, deadline_at)
-            if df is not None and not df.empty:
-                return df
+            await m.answer("Не удалось получить котировки сейчас." if lang == 'ru' else "Failed to fetch quotes right now.")
+        logger.debug(f"Fetch error: {e}")
+        await state.finish()
+        return
 
-    raise RuntimeError("PO scraping failed (no candles found)")
+    # анализ
+    if mode == "ind":
+        ind = compute_indicators(df)
+        action, notes = signal_from_indicators(df, ind)
+    else:
+        action, notes = simple_ta_signal(df)
+        ind = {}
+
+    # только текст (графики отключены)
+    if lang == "ru":
+        lines = [f"👉 Прогноз: <b>{action}</b>"]
+        if ind:
+            lines.append("📈 Индикаторы: " + ", ".join([
+                f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"
+            ]))
+        if notes:
+            lines.append("ℹ️ " + "; ".join(notes))
+    else:
+        lines = [f"👉 Forecast: <b>{action}</b>"]
+        if ind:
+            lines.append("📈 Indicators: " + ", ".join([
+                f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"
+            ]))
+        if notes:
+            lines.append("ℹ️ " + "; ".join(notes))
+
+    await m.answer("\n".join(lines), parse_mode="HTML")
+    await state.finish()
+
+def main():
+    if not TELEGRAM_TOKEN:
+        raise SystemExit("TELEGRAM_TOKEN env var is required")
+    executor.start_polling(dp, skip_updates=True)
+
+if __name__ == "__main__":
+    main()
