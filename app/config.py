@@ -21,3 +21,4 @@ PO_NAV_TIMEOUT_MS    = int(os.getenv("PO_NAV_TIMEOUT_MS", "18000"))         # pl
 PO_IDLE_TIMEOUT_MS   = int(os.getenv("PO_IDLE_TIMEOUT_MS", "10000"))        # playwright ожидание networkidle
 PO_WAIT_EXTRA_MS     = int(os.getenv("PO_WAIT_EXTRA_MS", "6000"))           # доп. ожидание после загрузки
 PO_HTTPX_TIMEOUT     = float(os.getenv("PO_HTTPX_TIMEOUT", "3.0"))          # таймаут httpx
+PO_BROWSER_ORDER     = os.getenv("PO_BROWSER_ORDER", "firefox,chromium,webkit")  # порядок браузеров
