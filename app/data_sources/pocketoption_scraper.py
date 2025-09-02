@@ -246,3 +246,48 @@ def scrape_po(symbol: str, limit: int = 150, otc: bool = False) -> pd.DataFrame 
         if df is not None and not df.empty:
             return df
     return None
+
+# 👇👇👇 НОВАЯ ДОБАВЛЕННАЯ ЧАСТЬ 👇👇👇
+
+# Явно экспортируемое API этого модуля
+__all__ = ["fetch_po_ohlc"]
+
+def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False):
+    """
+    Главная точка входа для получения свечей с PocketOption.
+    Вызывается из app/main.py. Ничего больше отсюда импортировать не нужно.
+    """
+    base_paths = [
+        "https://pocketoption.com/en/chart/?asset={asset}",
+        "https://pocketoption.com/ru/chart/?asset={asset}",
+        "https://pocketoption.com/en/chart-new/?asset={asset}",
+        "https://pocketoption.com/ru/chart-new/?asset={asset}",
+    ]
+
+    deadline_at = time.time() + PO_SCRAPE_DEADLINE
+    candidates = _asset_candidates(symbol, otc=otc)
+    logger.debug(f"PO candidates: {candidates}")
+
+    for asset in candidates:
+        if time.time() > deadline_at:
+            break
+        logger.debug(f"PO try asset={asset}")
+
+        if otc:
+            # OTC: сперва Playwright, затем быстрая статика
+            df = _try_playwright(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+            df = _try_static(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+        else:
+            # FIN: сперва статика, затем Playwright
+            df = _try_static(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+            df = _try_playwright(asset, base_paths, limit, deadline_at)
+            if df is not None and not df.empty:
+                return df
+
+    raise RuntimeError("PO scraping failed (no candles found)")
