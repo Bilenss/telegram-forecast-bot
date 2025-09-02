@@ -1,5 +1,5 @@
 from __future__ import annotations
-import random, time
+import random, time, json, re
 import pandas as pd
 import httpx
 from bs4 import BeautifulSoup
@@ -28,11 +28,11 @@ def _client():
     return httpx.Client(timeout=20, headers=_headers(), proxies=proxies, follow_redirects=True)
 
 def _asset_candidates(symbol: str, otc: bool):
-    cands = [symbol]
+    base = symbol.upper()
+    cands = [base]
     if otc:
-        base = symbol.upper()
+        # Перебираем популярные варианты OTC-кода
         cands += [f"{base}_OTC", f"{base}-OTC", f"{base}OTC", f"{base}_otc", f"{base}-otc", f"{base}otc"]
-    # убрать дубли, сохранить порядок
     seen, out = set(), []
     for s in cands:
         if s not in seen:
@@ -40,18 +40,28 @@ def _asset_candidates(symbol: str, otc: bool):
     return out
 
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
-    """Пробуем достать массив свечей из встраиваемых <script>."""
-    import re, json
-    m = re.search(r'\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]', text, re.S)
-    if not m:
-        return None
+    """Пробуем достать массив свечей из <script>."""
     try:
+        # ищем любой JSON-массив объектов
+        m = re.search(r'\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]', text, re.S)
+        if not m: 
+            return None
         data = json.loads(m.group(0))
         rows = []
         for it in data:
-            t = pd.to_datetime(it.get("t") or it.get("time") or 0, unit="s")
-            o,h,l,c = float(it["o"]), float(it["h"]), float(it["l"]), float(it["c"])
-            rows.append([t,o,h,l,c])
+            keys = {k.lower() for k in it.keys()}
+            # поддерживаем варианты: t|time, o|open, h|high, l|low, c|close
+            t = it.get("t") or it.get("time") or it.get("timestamp")
+            o = it.get("o") or it.get("open")
+            h = it.get("h") or it.get("high")
+            l = it.get("l") or it.get("low")
+            c = it.get("c") or it.get("close")
+            if t is None or o is None or h is None or l is None or c is None:
+                continue
+            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int,float)) else pd.to_datetime(t, errors="coerce")
+            if pd.isna(ts): 
+                continue
+            rows.append([ts, float(o), float(h), float(l), float(c)])
         if not rows:
             return None
         return pd.DataFrame(rows, columns=["time","Open","High","Low","Close"]).set_index("time")
@@ -64,6 +74,7 @@ def _try_static(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame |
             url = tpl.format(asset=asset)
             try:
                 r = client.get(url)
+                logger.debug(f"PO[static] GET {url} -> {r.status_code}")
                 if r.status_code == 404:
                     continue
                 r.raise_for_status()
@@ -74,19 +85,19 @@ def _try_static(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame |
                     if df is not None and not df.empty:
                         return df.tail(limit)
             except httpx.HTTPError as e:
-                logger.debug(f"PO static request failed for {url}: {e}")
+                logger.debug(f"PO[static] failed {url}: {e}")
             time.sleep(random.uniform(0.2, 0.5))
     return None
 
 def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFrame | None:
-    """Открываем страницу в Chromium и перехватываем JSON-ответы со свечами."""
+    """Открываем страницу в Chromium и перехватываем все JSON-ответы, ищем свечи."""
     rows = []
 
     def collect_from_json(obj):
-        # рекурсивно ищем список словарей с ключами o/h/l/c (+ t|time|timestamp)
         def find_list(x):
+            # ищем список словарей с ключами свечей
             if isinstance(x, list) and x and isinstance(x[0], dict):
-                keys = set(x[0].keys())
+                keys = set(map(str.lower, x[0].keys()))
                 if {"o","h","l","c"}.issubset(keys) or {"open","high","low","close"}.issubset(keys):
                     return x
             if isinstance(x, dict):
@@ -100,18 +111,18 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
             return None
 
         items = find_list(obj)
-        if not items: 
+        if not items:
             return
         for it in items:
             t = it.get("t") or it.get("time") or it.get("timestamp")
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int,float)) else pd.to_datetime(t, errors="coerce")
-            if ts is pd.NaT: 
-                continue
             o = it.get("o") or it.get("open")
             h = it.get("h") or it.get("high")
             l = it.get("l") or it.get("low")
             c = it.get("c") or it.get("close")
             try:
+                ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int,float)) else pd.to_datetime(t, errors="coerce")
+                if pd.isna(ts): 
+                    continue
                 rows.append([ts, float(o), float(h), float(l), float(c)])
             except Exception:
                 continue
@@ -125,6 +136,15 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
             launch_kwargs["proxy"] = {"server": PO_PROXY}
         browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(user_agent=random.choice(UAS), locale="en-US")
+
+        # Блокируем тяжелые ресурсы
+        def route_handler(route):
+            r = route.request
+            if r.resource_type in ("image", "font", "stylesheet"):
+                return route.abort()
+            return route.continue_()
+        context.route("**/*", route_handler)
+
         page = context.new_page()
 
         def on_response(resp):
@@ -132,23 +152,28 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
             if "application/json" not in ctype.lower():
                 return
             url = resp.url.lower()
-            if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart"]):
+            if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series"]):
                 try:
-                    collect_from_json(resp.json())
-                except Exception:
-                    pass
+                    j = resp.json()
+                    collect_from_json(j)
+                    logger.debug(f"PO[pw] JSON {url} -> ok")
+                except Exception as e:
+                    logger.debug(f"PO[pw] JSON parse fail {url}: {e}")
 
         page.on("response", on_response)
+        page.on("requestfinished", lambda req: None)  # просто активируем событие
 
         for tpl in base_paths:
             url = tpl.format(asset=asset)
             try:
+                logger.debug(f"PO[pw] goto {url}")
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
-                page.wait_for_timeout(4000)  # дать времени XHR запросам
+                page.wait_for_load_state("networkidle", timeout=20000)
+                page.wait_for_timeout(3500)  # дать XHR добежать
                 if rows:
                     break
             except Exception as e:
-                logger.debug(f"Playwright navigation failed for {url}: {e}")
+                logger.debug(f"PO[pw] navigation failed for {url}: {e}")
 
         context.close()
         browser.close()
@@ -157,28 +182,32 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
         return None
 
     df = (pd.DataFrame(rows, columns=["time","Open","High","Low","Close"])
-            .dropna()
-            .drop_duplicates(subset=["time"])
-            .sort_values("time")
-            .set_index("time")
-            .tail(limit))
+          .dropna()
+          .drop_duplicates(subset=["time"])
+          .sort_values("time")
+          .set_index("time")
+          .tail(limit))
     return df if not df.empty else None
 
 def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
     """Получает свечи с публичной страницы графика PocketOption.
-    Для OTC перебирает варианты кода + локали; если статикой не вышло — используем Playwright.
+    Для OTC перебирает варианты кода + локали; если статикой не вышло — Playwright.
     """
     base_paths = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
+        # на всякий случай дополнительный путь
+        "https://pocketoption.com/en/chart-new/?asset={asset}",
+        "https://pocketoption.com/ru/chart-new/?asset={asset}",
     ]
 
     for asset in _asset_candidates(symbol, otc=otc):
-        # 1) лёгкая попытка — парсинг встраиваемого JSON
+        logger.debug(f"PO try asset={asset}")
+        # 1) статикой
         df = _try_static(asset, base_paths, limit)
         if df is not None and not df.empty:
             return df
-        # 2) тяжёлая артиллерия — headless Chromium
+        # 2) Playwright
         df = _try_playwright(asset, base_paths, limit)
         if df is not None and not df.empty:
             return df
