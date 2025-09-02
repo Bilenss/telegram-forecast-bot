@@ -1,18 +1,20 @@
 from __future__ import annotations
-import random, time, json, re, os
+import random, time, json, re
 import pandas as pd
 import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
 from ..utils.user_agents import UAS
 from ..utils.logging import setup
-from ..config import PO_PROXY
+from ..config import (
+    PO_PROXY, PO_SCRAPE_DEADLINE, PO_PROXY_FIRST,
+    PO_NAV_TIMEOUT_MS, PO_IDLE_TIMEOUT_MS,
+    PO_WAIT_EXTRA_MS, PO_HTTPX_TIMEOUT
+)
 
 logger = setup()
-
-# 🔧 Быстрый дедлайн: чтобы укладываться в 35 сек таймаута бота
-PO_SCRAPE_DEADLINE = int(os.getenv("PO_SCRAPE_DEADLINE", "24"))  # было "28"
 
 def _headers():
     return {
@@ -27,8 +29,12 @@ def _headers():
 
 def _client():
     proxies = {"http://": PO_PROXY, "https://": PO_PROXY} if PO_PROXY else None
-    # 🔧 уменьшили таймаут с 7 до 3
-    return httpx.Client(timeout=3, headers=_headers(), proxies=proxies, follow_redirects=True)
+    return httpx.Client(
+        timeout=PO_HTTPX_TIMEOUT,
+        headers=_headers(),
+        proxies=proxies,
+        follow_redirects=True
+    )
 
 def _pw_proxy():
     if not PO_PROXY:
@@ -40,6 +46,36 @@ def _pw_proxy():
     if u.username: proxy["username"] = u.username
     if u.password: proxy["password"] = u.password
     return proxy
+
+def _pw_launch(use_proxy: bool):
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled"
+    ]
+    kwargs = {"headless": True, "args": args}
+    if use_proxy:
+        p = _pw_proxy()
+        if p:
+            kwargs["proxy"] = p
+            logger.debug(f"PO[pw] using proxy: {p.get('server')}")
+    return kwargs
+
+def _prewarm_and_accept(page):
+    try:
+        page.goto("https://pocketoption.com/", wait_until="domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+        page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
+        for sel in [
+            "text=Accept", "text=I agree", "text=Согласен", "text=Принять",
+            "button:has-text('Accept')", "button:has-text('Принять')"
+        ]:
+            try:
+                page.locator(sel).first.click(timeout=1500)
+                break
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"PO[pw] prewarm fail: {e}")
 
 def _asset_candidates(symbol: str, otc: bool):
     base = symbol.upper().replace(" ", "").replace("/", "")
@@ -53,7 +89,8 @@ def _asset_candidates(symbol: str, otc: bool):
     seen, out = set(), []
     for s in cands:
         if s not in seen:
-            seen.add(s); out.append(s)
+            seen.add(s)
+            out.append(s)
     return out
 
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
@@ -69,22 +106,22 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
             h = it.get("h") or it.get("high")
             l = it.get("l") or it.get("low")
             c = it.get("c") or it.get("close")
-            if None in (t,o,h,l,c):
+            if None in (t, o, h, l, c):
                 continue
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t,(int,float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts): 
+            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         if not rows:
             return None
-        return pd.DataFrame(rows, columns=["time","Open","High","Low","Close"]).set_index("time")
+        return pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
     except Exception:
         return None
 
 def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     with _client() as client:
         for tpl in base_paths:
-            if time.time() > deadline_at: 
+            if time.time() > deadline_at:
                 return None
             url = tpl.format(asset=asset)
             try:
@@ -108,19 +145,22 @@ def _collect_from_json_object(obj, rows: list):
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
-            if {"o","h","l","c"}.issubset(keys) or {"open","high","low","close"}.issubset(keys):
+            if {"o", "h", "l", "c"}.issubset(keys) or {"open", "high", "low", "close"}.issubset(keys):
                 return x
         if isinstance(x, dict):
             for v in x.values():
                 r = find_list(v)
-                if r is not None: return r
+                if r is not None:
+                    return r
         if isinstance(x, list):
             for v in x:
                 r = find_list(v)
-                if r is not None: return r
+                if r is not None:
+                    return r
         return None
+
     items = find_list(obj)
-    if not items: 
+    if not items:
         return
     for it in items:
         t = it.get("t") or it.get("time") or it.get("timestamp")
@@ -129,60 +169,56 @@ def _collect_from_json_object(obj, rows: list):
         l = it.get("l") or it.get("low")
         c = it.get("c") or it.get("close")
         try:
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t,(int,float)) else pd.to_datetime(t, errors="coerce")
-            if pd.isna(ts): 
+            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         except Exception:
             continue
 
-def _playwright_attempt(asset: str, base_paths: list[str], limit: int, deadline_at: float, use_proxy: bool):
+def _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy):
     rows = []
     with sync_playwright() as p:
-        launch_kwargs = {
-            "headless": True,
-            "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-        }
-        if use_proxy:
-            pwp = _pw_proxy()
-            if pwp:
-                launch_kwargs["proxy"] = pwp
-                logger.debug(f"PO[pw] using proxy: {pwp.get('server')}")
-        browser = p.chromium.launch(**launch_kwargs)
+        browser = p.chromium.launch(**_pw_launch(use_proxy))
         context = browser.new_context(
             user_agent=random.choice(UAS),
             locale="en-US",
             timezone_id="UTC",
-            viewport={"width":1280,"height":800},
+            viewport={"width": 1280, "height": 800}
         )
         context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        context.route("**/*", lambda route: route.abort() if route.request.resource_type in ("image", "font", "stylesheet", "media") else route.continue_())
         page = context.new_page()
 
         def on_response(resp):
-            ctype = (resp.headers or {}).get("content-type","").lower()
+            ctype = (resp.headers or {}).get("content-type", "").lower()
             if "application/json" not in ctype:
                 return
             url = resp.url.lower()
-            if any(k in url for k in ["candle","candles","ohlc","history","chart","series","timeseries"]):
+            if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
                 try:
-                    j = resp.json()
-                    _collect_from_json_object(j, rows)
+                    _collect_from_json_object(resp.json(), rows)
                     logger.debug(f"PO[pw] JSON {url} -> parsed")
                 except Exception as e:
                     logger.debug(f"PO[pw] JSON parse fail {url}: {e}")
+
         page.on("response", on_response)
 
+        _prewarm_and_accept(page)
+
         for tpl in base_paths:
-            if time.time() > deadline_at: 
+            if time.time() > deadline_at:
                 break
             url = tpl.format(asset=asset)
             try:
                 logger.debug(f"PO[pw] goto {url}")
-                page.goto(url, wait_until="domcontentloaded", timeout=12000)
-                page.wait_for_load_state("networkidle", timeout=8000)
-                page.wait_for_timeout(6000)
-                if rows: 
+                page.goto(url, wait_until="domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+                page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
+                page.wait_for_timeout(PO_WAIT_EXTRA_MS)
+                if rows:
                     break
+            except PWTimeout as e:
+                logger.debug(f"PO[pw] navigation timeout {url}: {e}")
             except Exception as e:
                 logger.debug(f"PO[pw] navigation failed for {url}: {e}")
 
@@ -191,22 +227,23 @@ def _playwright_attempt(asset: str, base_paths: list[str], limit: int, deadline_
 
     if not rows:
         return None
-    df = (pd.DataFrame(rows, columns=["time","Open","High","Low","Close"])
+    df = (pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
           .dropna().drop_duplicates(subset=["time"])
           .sort_values("time").set_index("time").tail(limit))
     return df if not df.empty else None
 
-def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
-    if PO_PROXY and time.time() <= deadline_at:
-        df = _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy=True)
+def _try_playwright(asset, base_paths, limit, deadline_at) -> pd.DataFrame | None:
+    order = [True, False] if PO_PROXY_FIRST else [False, True]
+    for use_proxy in order:
+        if time.time() > deadline_at:
+            break
+        df = _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy)
         if df is not None and not df.empty:
             return df
-        logger.debug("PO[pw] proxy attempt failed, trying direct...")
-    if time.time() <= deadline_at:
-        return _playwright_attempt(asset, base_paths, limit, deadline_at, use_proxy=False)
+        logger.debug("PO[pw] attempt failed" + (" via proxy" if use_proxy else " direct"))
     return None
 
-def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
+def fetch_po_ohlc(symbol, timeframe="5m", limit=300, otc=False) -> pd.DataFrame:
     base_paths = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
@@ -223,7 +260,6 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         logger.debug(f"PO try asset={asset}")
 
         if otc:
-            # ✅ OTC: сначала Playwright, потом быстрая статика
             df = _try_playwright(asset, base_paths, limit, deadline_at)
             if df is not None and not df.empty:
                 return df
@@ -231,7 +267,6 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
             if df is not None and not df.empty:
                 return df
         else:
-            # FIN: как раньше — сначала статика, потом PW
             df = _try_static(asset, base_paths, limit, deadline_at)
             if df is not None and not df.empty:
                 return df
