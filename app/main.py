@@ -114,7 +114,18 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
     await m.answer("Готовлю данные..." if lang == 'ru' else "Fetching data...")
 
     try:
-        df = await asyncio.to_thread(_fetch_ohlc, info, timeframe)
+        df = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_ohlc, info, timeframe),
+            timeout=35  # ⏳ лимит времени на получение данных
+        )
+    except asyncio.TimeoutError:
+        msg_ru = ("⏱ Истек таймаут получения данных с PocketOption. "
+                  "Попробуйте другой таймфрейм или позже, либо выберите категорию 💰 ACTIVE FIN.")
+        msg_en = ("⏱ Timed out fetching data from PocketOption. "
+                  "Try another timeframe or later, or choose 💰 ACTIVE FIN.")
+        await m.answer(msg_ru if lang == 'ru' else msg_en)
+        await state.finish()
+        return
     except Exception as e:
         if info.get("otc"):
             msg_ru = ("OTC-пары доступны только на платформе PocketOption. "
@@ -140,14 +151,22 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
     if lang == "ru":
         lines = [f"👉 Прогноз: <b>{action}</b>"]
         if ind:
-            lines.append("📈 Индикаторы: " + ", ".join([f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"]))
+            lines.append("📈 Индикаторы: " + ", ".join([
+                f"RSI={ind['RSI']}",
+                f"EMA9={ind['EMA_fast']}",
+                f"EMA21={ind['EMA_slow']}"
+            ]))
         if notes:
             lines.append("ℹ️ " + "; ".join(notes))
         text = "\n".join(lines)
     else:
         lines = [f"👉 Forecast: <b>{action}</b>"]
         if ind:
-            lines.append("📈 Indicators: " + ", ".join([f"RSI={ind['RSI']}", f"EMA9={ind['EMA_fast']}", f"EMA21={ind['EMA_slow']}"]))
+            lines.append("📈 Indicators: " + ", ".join([
+                f"RSI={ind['RSI']}",
+                f"EMA9={ind['EMA_fast']}",
+                f"EMA21={ind['EMA_slow']}"
+            ]))
         if notes:
             lines.append("ℹ️ " + "; ".join(notes))
         text = "\n".join(lines)
