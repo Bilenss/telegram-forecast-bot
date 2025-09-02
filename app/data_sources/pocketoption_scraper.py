@@ -196,7 +196,7 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int) -> pd.DataFra
                 logger.debug(f"PO[pw] goto {url}")
                 page.goto(url, wait_until="domcontentloaded", timeout=25000)
                 page.wait_for_load_state("networkidle", timeout=20000)
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(8000)
 
                 if not rows:
                     try:
