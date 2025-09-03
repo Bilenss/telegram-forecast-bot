@@ -105,7 +105,6 @@ def _asset_candidates(symbol: str, otc: bool) -> list[str]:
 
 
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
-    """Попытка выдернуть список свечей, зашитый прямо в <script>."""
     try:
         m = re.search(r"\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]", text, re.S)
         if not m:
@@ -130,16 +129,12 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
             rows.append([ts, float(o), float(h), float(l), float(c)])
         if not rows:
             return None
-        return (
-            pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
-            .set_index("time")
-        )
+        return pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
     except Exception:
         return None
 
 
 def _collect_from_json_object(obj, rows: list):
-    """Ищем в произвольном JSON массив словарей с ключами O/H/L/C (или open/high/low/close)."""
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
@@ -182,26 +177,33 @@ def _collect_from_json_object(obj, rows: list):
 # -------------------- static try (httpx) --------------------
 
 def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
+    # Пробуем UPPER и lower — у PO часто живёт только нижний регистр
+    variants = [asset]
+    al = asset.lower()
+    if al != asset:
+        variants.append(al)
+
     with _client() as client:
-        for tpl in base_paths:
-            if time.time() > deadline_at:
-                return None
-            url = tpl.format(asset=asset)
-            try:
-                r = client.get(url)
-                logger.debug(f"PO[static] GET {url} -> {r.status_code}")
-                if r.status_code == 404:
-                    continue
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, "html.parser")
-                for sc in soup.find_all("script"):
-                    txt = sc.string or sc.text or ""
-                    df = _parse_embedded_candles(txt)
-                    if df is not None and not df.empty:
-                        return df.tail(limit)
-            except httpx.HTTPError as e:
-                logger.debug(f"PO[static] failed {url}: {e}")
-            time.sleep(0.3)
+        for av in variants:
+            for tpl in base_paths:
+                if time.time() > deadline_at:
+                    return None
+                url = tpl.format(asset=av)
+                try:
+                    r = client.get(url)
+                    logger.debug(f"PO[static] GET {url} -> {r.status_code}")
+                    if r.status_code == 404:
+                        continue
+                    r.raise_for_status()
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    for sc in soup.find_all("script"):
+                        txt = sc.string or sc.text or ""
+                        df = _parse_embedded_candles(txt)
+                        if df is not None and not df.empty:
+                            return df.tail(limit)
+                except httpx.HTTPError as e:
+                    logger.debug(f"PO[static] failed {url}: {e}")
+                time.sleep(0.3)
     return None
 
 
@@ -210,7 +212,7 @@ def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: floa
 def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool):
     rows = []
 
-    launcher = getattr(pw, browser_name)  # pw.firefox / pw.chromium / pw.webkit
+    launcher = getattr(pw, browser_name)
     browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
     context = browser.new_context(
         user_agent=random.choice(UAS),
@@ -219,7 +221,6 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         viewport={"width": 1280, "height": 800},
     )
     context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-    # режем тяжёлые ресурсы
     context.route(
         "**/*",
         lambda r: r.abort()
@@ -228,9 +229,8 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
     )
     page = context.new_page()
 
-    # перехват JSON-ответов
     def on_response(resp):
-        # Фильтруем сторонние домены (ads/gtm/analytics и т.п.)
+        # только pocketoption.com
         try:
             host = urlparse(resp.url).hostname or ""
         except Exception:
@@ -238,55 +238,57 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         if not host.endswith("pocketoption.com"):
             return
 
-        # Тип контента иногда бывает кривой (text/plain), поэтому пробуем json() в try.
         url = resp.url.lower()
         if not any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
             return
         try:
             payload = resp.json()
         except Exception:
-            return  # не шумим в лог — просто пропустили не-JSON
-
+            return
         _collect_from_json_object(payload, rows)
         logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
 
     page.on("response", on_response)
 
-    for tpl in base_paths:
-        if time.time() > deadline_at:
-            break
-        url = tpl.format(asset=asset)
-        try:
-            logger.debug(f"PO[pw][{browser_name}] goto {url}")
-            page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
-            except Exception:
-                pass  # ок, иногда не случается
-            page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
-            page.wait_for_timeout(PO_WAIT_EXTRA_MS)
-            if rows:
+    # Тоже пробуем UPPER и lower
+    variants = [asset]
+    al = asset.lower()
+    if al != asset:
+        variants.append(al)
+
+    for av in variants:
+        for tpl in base_paths:
+            if time.time() > deadline_at:
                 break
-        except PWTimeout as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation timeout {url}: {e}")
-        except Exception as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
+            url = tpl.format(asset=av)
+            try:
+                logger.debug(f"PO[pw][{browser_name}] goto {url}")
+                page.goto(url, wait_until="domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
+                except Exception:
+                    pass
+                page.wait_for_timeout(PO_WAIT_EXTRA_MS)
+                if rows:
+                    context.close()
+                    browser.close()
+                    df = (
+                        pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
+                        .dropna()
+                        .drop_duplicates(subset=["time"])
+                        .sort_values("time")
+                        .set_index("time")
+                        .tail(limit)
+                    )
+                    return df if not df.empty else None
+            except PWTimeout as e:
+                logger.debug(f"PO[pw][{browser_name}] navigation timeout {url}: {e}")
+            except Exception as e:
+                logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
 
     context.close()
     browser.close()
-
-    if not rows:
-        return None
-
-    df = (
-        pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
-        .dropna()
-        .drop_duplicates(subset=["time"])
-        .sort_values("time")
-        .set_index("time")
-        .tail(limit)
-    )
-    return df if not df.empty else None
+    return None
 
 
 def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
@@ -314,26 +316,17 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: 
 __all__ = ["fetch_po_ohlc"]
 
 def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
-    """
-    Главная точка входа: вернуть DataFrame со свечами (index=time, cols=Open/High/Low/Close).
-    Для OTC сначала Playwright, затем статика; для FIN — наоборот.
-    """
-
-    # Пути, которые чаще дают данные без авторизации.
+    # базовые пути
     base_paths_fin = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
         "https://pocketoption.com/en/chart-new/?asset={asset}",
         "https://pocketoption.com/ru/chart-new/?asset={asset}",
-        # финкам иногда тоже помогает trade-страница
         "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
     ]
-
-    # Для OTC отдаём «trade»-страницы раньше — на практике по ним
-    # чаще всего прилетает нужный XHR с свечами.
     base_paths_otc = [
         "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade/{asset}/",
@@ -344,7 +337,6 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
     ]
-
     base_paths = base_paths_otc if otc else base_paths_fin
 
     deadline_at = time.time() + PO_SCRAPE_DEADLINE
@@ -357,7 +349,6 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         logger.debug(f"PO try asset={asset}")
 
         if otc:
-            # 1) Playwright → 2) статический fallback
             df = _try_playwright(asset, base_paths, limit, deadline_at)
             if df is not None and not df.empty:
                 return df
@@ -365,7 +356,6 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
             if df is not None and not df.empty:
                 return df
         else:
-            # FIN: 1) статик → 2) Playwright
             df = _try_static(asset, base_paths, limit, deadline_at)
             if df is not None and not df.empty:
                 return df
