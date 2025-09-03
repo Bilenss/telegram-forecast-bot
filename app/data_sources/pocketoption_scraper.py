@@ -230,16 +230,25 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
 
     # перехват JSON-ответов
     def on_response(resp):
-        ct = (resp.headers or {}).get("content-type", "").lower()
-        if "application/json" not in ct:
+        # Фильтруем сторонние домены (ads/gtm/analytics и т.п.)
+        try:
+            host = urlparse(resp.url).hostname or ""
+        except Exception:
             return
+        if not host.endswith("pocketoption.com"):
+            return
+
+        # Тип контента иногда бывает кривой (text/plain), поэтому пробуем json() в try.
         url = resp.url.lower()
-        if any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
-            try:
-                _collect_from_json_object(resp.json(), rows)
-                logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
-            except Exception as e:
-                logger.debug(f"PO[pw][{browser_name}] JSON parse fail {url}: {e}")
+        if not any(k in url for k in ["candle", "candles", "ohlc", "history", "chart", "series", "timeseries"]):
+            return
+        try:
+            payload = resp.json()
+        except Exception:
+            return  # не шумим в лог — просто пропустили не-JSON
+
+        _collect_from_json_object(payload, rows)
+        logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
 
     page.on("response", on_response)
 
@@ -249,7 +258,6 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         url = tpl.format(asset=asset)
         try:
             logger.debug(f"PO[pw][{browser_name}] goto {url}")
-            # быстрее минуем ожидание событий DOM при антиботе
             page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
