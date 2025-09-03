@@ -310,12 +310,34 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
     Главная точка входа: вернуть DataFrame со свечами (index=time, cols=Open/High/Low/Close).
     Для OTC сначала Playwright, затем статика; для FIN — наоборот.
     """
-    base_paths = [
+
+    # Пути, которые чаще дают данные без авторизации.
+    base_paths_fin = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
         "https://pocketoption.com/en/chart-new/?asset={asset}",
         "https://pocketoption.com/ru/chart-new/?asset={asset}",
+        # финкам иногда тоже помогает trade-страница
+        "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
+        "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
     ]
+
+    # Для OTC отдаём «trade»-страницы раньше — на практике по ним
+    # чаще всего прилетает нужный XHR с свечами.
+    base_paths_otc = [
+        "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
+        "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
+        "https://pocketoption.com/en/chart-new/?asset={asset}",
+        "https://pocketoption.com/ru/chart-new/?asset={asset}",
+        "https://pocketoption.com/en/chart/?asset={asset}",
+        "https://pocketoption.com/ru/chart/?asset={asset}",
+    ]
+
+    base_paths = base_paths_otc if otc else base_paths_fin
 
     deadline_at = time.time() + PO_SCRAPE_DEADLINE
     candidates = _asset_candidates(symbol, otc=otc)
