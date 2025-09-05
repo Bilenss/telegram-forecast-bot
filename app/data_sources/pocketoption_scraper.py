@@ -1,5 +1,7 @@
+# app/data_sources/pocketoption_scraper.py
 from __future__ import annotations
 
+import os
 import time
 import random
 import json
@@ -11,7 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-from ..utils.user_agents import UAS
+from ..utils.user_agents import UAS  # оставим список на всякий
 from ..utils.logging import setup
 from ..config import (
     PO_PROXY,
@@ -26,20 +28,26 @@ from ..config import (
 
 logger = setup()
 
+# -------- конфигурация «стелса» --------
+STABLE_UA = (
+    # стабильный UA — чаще проходит антибот, чем случайный на каждый запуск
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+EXTRA_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "DNT": "1",
+    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://pocketoption.com/",
+}
+
+SELFTEST = os.getenv("PO_PROXY_SELFTEST", "0") == "1"
+
 # -------------------- helpers --------------------
-
 def _headers() -> dict:
-    return {
-        "User-Agent": random.choice(UAS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-        "Connection": "keep-alive",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
-        "Referer": "https://pocketoption.com/",
-        "Upgrade-Insecure-Requests": "1",
-    }
-
+    # для статического httpx можно периодически менять UA
+    return {**EXTRA_HEADERS, "User-Agent": STABLE_UA}
 
 def _client() -> httpx.Client:
     proxies = {"http://": PO_PROXY, "https://": PO_PROXY} if PO_PROXY else None
@@ -49,7 +57,6 @@ def _client() -> httpx.Client:
         proxies=proxies,
         follow_redirects=True,
     )
-
 
 def _pw_proxy():
     if not PO_PROXY:
@@ -64,14 +71,15 @@ def _pw_proxy():
         p["password"] = u.password
     return p
 
-
 def _pw_launch_kwargs(use_proxy: bool) -> dict:
     kw = {
         "headless": True,
+        "ignore_https_errors": True,
         "args": [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
         ],
     }
     if use_proxy:
@@ -80,7 +88,6 @@ def _pw_launch_kwargs(use_proxy: bool) -> dict:
             kw["proxy"] = prox
             logger.debug(f"PO[pw] using proxy: {prox.get('server')}")
     return kw
-
 
 def _asset_candidates(symbol: str, otc: bool) -> list[str]:
     base = symbol.upper().replace(" ", "").replace("/", "")
@@ -91,21 +98,17 @@ def _asset_candidates(symbol: str, otc: bool) -> list[str]:
             f"OTC_{base}", f"OTC-{base}", f"OTC{base}",
             f"{base}_otc", f"{base}-otc", f"{base}otc",
         ]
-    # на всякий случай — нижний регистр тоже иногда встречается
-    cands += [s.lower() for s in list(cands)]
-    seen, out = set(), []
+    # + нижний регистр как запасной вариант
+    low = base.lower()
+    cands += [low, f"{low}_otc", f"{low}-otc", f"{low}otc",
+              f"otc_{low}", f"otc-{low}", f"otc{low}"]
+    out, seen = [], set()
     for s in cands:
         if s not in seen:
-            seen.add(s)
-            out.append(s)
+            out.append(s); seen.add(s)
     return out
 
-
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
-    """
-    Попытка выдернуть массив свечей, «зашитый» прямо в <script>.
-    Ищем первый JSON-подобный список словарей.
-    """
     try:
         m = re.search(r"\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]", text, re.S)
         if not m:
@@ -120,39 +123,32 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
             c = it.get("c") or it.get("close")
             if None in (t, o, h, l, c):
                 continue
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            ts = (pd.to_datetime(t, unit="s", errors="coerce")
+                  if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce"))
             if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         if not rows:
             return None
-        return pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"]).set_index("time")
+        return pd.DataFrame(rows, columns=["time","Open","High","Low","Close"]).set_index("time")
     except Exception:
         return None
 
-
 def _collect_from_json_object(obj, rows: list):
-    """
-    В произвольном JSON ищем список словарей с O/H/L/C (или open/high/low/close)
-    и дописываем в rows -> [ts, o, h, l, c].
-    """
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
-            if {"o", "h", "l", "c"}.issubset(keys) or {"open", "high", "low", "close"}.issubset(keys):
+            if {"o","h","l","c"}.issubset(keys) or {"open","high","low","close"}.issubset(keys):
                 return x
         if isinstance(x, dict):
             for v in x.values():
-                r = find_list(v)
-                if r is not None:
-                    return r
+                r = find_list(v);  
+                if r is not None: return r
         if isinstance(x, list):
             for v in x:
-                r = find_list(v)
-                if r is not None:
-                    return r
+                r = find_list(v);
+                if r is not None: return r
         return None
-
     items = find_list(obj)
     if not items:
         return
@@ -163,35 +159,15 @@ def _collect_from_json_object(obj, rows: list):
         l = it.get("l") or it.get("low")
         c = it.get("c") or it.get("close")
         try:
-            ts = pd.to_datetime(t, unit="s", errors="coerce") if isinstance(t, (int, float)) else pd.to_datetime(t, errors="coerce")
+            ts = (pd.to_datetime(t, unit="s", errors="coerce")
+                  if isinstance(t,(int,float)) else pd.to_datetime(t, errors="coerce"))
             if pd.isna(ts):
                 continue
             rows.append([ts, float(o), float(h), float(l), float(c)])
         except Exception:
             continue
 
-
-def _maybe_parse_ws_frame(data, rows: list):
-    """
-    Кадр websocket может приходить как bytes/str. Пробуем распарсить JSON
-    и выдернуть свечи через _collect_from_json_object.
-    """
-    try:
-        if isinstance(data, (bytes, bytearray)):
-            data = data.decode("utf-8", "ignore")
-        if not isinstance(data, str):
-            return
-        # Быстрый фильтр от мусора
-        if not any(k in data for k in ('"o"', '"open"', '"c"', '"close"')):
-            return
-        obj = json.loads(data)
-        _collect_from_json_object(obj, rows)
-    except Exception:
-        pass
-
-
-# -------------------- static try (httpx) --------------------
-
+# -------------------- статический httpx --------------------
 def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     with _client() as client:
         for tpl in base_paths:
@@ -215,75 +191,70 @@ def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: floa
             time.sleep(0.25)
     return None
 
-
-# -------------------- playwright tries --------------------
+# -------------------- playwright --------------------
+def _pw_selftest(context):
+    # Проверяем внешний IP через Playwright (если включено)
+    if not SELFTEST:
+        return
+    page = context.new_page()
+    try:
+        page.set_default_timeout(5000)
+        page.goto("https://api.ipify.org?format=json", wait_until="domcontentloaded")
+        ip = page.text_content("body") or ""
+        logger.debug(f"PO[pw][selftest] ipify -> {ip.strip()[:120]}")
+    except Exception as e:
+        logger.debug(f"PO[pw][selftest] failed: {e}")
+    finally:
+        page.close()
 
 def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool):
-    rows: list[list] = []
-
-    launcher = getattr(pw, browser_name)  # pw.firefox / pw.chromium / pw.webkit
+    rows = []
+    launcher = getattr(pw, browser_name)
     browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
     context = browser.new_context(
-        user_agent=random.choice(UAS),
+        user_agent=STABLE_UA,
         locale="en-US",
         timezone_id="UTC",
-        viewport={"width": 1280, "height": 800},
+        viewport={"width": 1366, "height": 768},
     )
-    # Маскируем webdriver
     context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-    # Режем тяжёлые ресурсы (XHR/fetch/ws НЕ трогаем)
-    context.route(
-        "**/*",
-        lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_(),
-    )
+    context.set_extra_http_headers(EXTRA_HEADERS)
+    # Не режем XHR/fetch — только тяжёлые типы
+    context.route("**/*", lambda r: r.abort()
+                  if r.request.resource_type in ("image","font","media","stylesheet")
+                  else r.continue_())
 
-    page = context.new_page()
-
-    # HTTP-ответы (XHR/fetch)
+    # Перехват JSON только с pocketoption.com
     def on_response(resp):
         try:
             host = urlparse(resp.url).hostname or ""
         except Exception:
             return
-        if "pocketoption.com" not in host:
+        if not host.endswith("pocketoption.com"):
             return
-
         url = resp.url.lower()
-        # более широкий набор «подозрительных» ключей:
-        if not any(k in url for k in ["candle", "candles", "ohlc", "history", "series", "timeseries", "chart", "feed", "stream"]):
+        if not any(k in url for k in ("candle","candles","ohlc","history","chart","series","timeseries")):
             return
-
-        # Пробуем и json(), и text()
         try:
             payload = resp.json()
-            _collect_from_json_object(payload, rows)
-            logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
-            return
-        except Exception:
-            pass
-        try:
-            txt = resp.text()
-            df = _parse_embedded_candles(txt)
-            if df is not None and not df.empty:
-                for idx, row in df.reset_index().iterrows():
-                    rows.append([row["time"], row["Open"], row["High"], row["Low"], row["Close"]])
-                logger.debug(f"PO[pw][{browser_name}] TEXT {url} -> parsed")
         except Exception:
             return
+        _collect_from_json_object(payload, rows)
+        logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
+    context.on("response", on_response)
 
-    page.on("response", on_response)
+    # Самотест прокси
+    _pw_selftest(context)
 
-    # WebSocket кадры
-    def on_ws(ws):
-        try:
-            host = urlparse(ws.url).hostname or ""
-        except Exception:
-            host = ""
-        if "pocketoption.com" not in host:
-            return
-        ws.on("framereceived", lambda data: _maybe_parse_ws_frame(data, rows))
+    page = context.new_page()
+    page.set_default_timeout(PO_NAV_TIMEOUT_MS)
 
-    page.on("websocket", on_ws)
+    # «разбудим» домен, чтобы получить куки/челлендж
+    try:
+        page.goto("https://pocketoption.com/en/?from=bot", wait_until="domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+        page.wait_for_timeout(1200)
+    except Exception:
+        pass
 
     for tpl in base_paths:
         if time.time() > deadline_at:
@@ -291,7 +262,13 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         url = tpl.format(asset=asset)
         try:
             logger.debug(f"PO[pw][{browser_name}] goto {url}")
-            page.goto(url, wait_until="domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+            # сначала быстрый commit
+            page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+            except Exception:
+                pass
+            # даём закончиться сетке
             try:
                 page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
             except Exception:
@@ -304,69 +281,54 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         except Exception as e:
             logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
 
+    page.close()
     context.close()
     browser.close()
 
     if not rows:
         return None
-
-    df = (
-        pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
-        .dropna()
-        .drop_duplicates(subset=["time"])
-        .sort_values("time")
-        .set_index("time")
-        .tail(limit)
-    )
+    df = (pd.DataFrame(rows, columns=["time","Open","High","Low","Close"])
+          .dropna().drop_duplicates(subset=["time"]).sort_values("time")
+          .set_index("time").tail(limit))
     return df if not df.empty else None
-
 
 def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     browser_order = [b.strip() for b in PO_BROWSER_ORDER.split(",") if b.strip()]
     direct_first = not PO_PROXY_FIRST
     proxy_order = [False, True] if direct_first else [True, False]
-
     with sync_playwright() as pw:
         for use_proxy in proxy_order:
             for bname in browser_order:
                 if time.time() > deadline_at:
                     return None
-                df = _playwright_attempt_with_browser(
-                    pw, bname, asset, base_paths, limit, deadline_at, use_proxy
-                )
+                df = _playwright_attempt_with_browser(pw, bname, asset, base_paths, limit, deadline_at, use_proxy)
                 if df is not None and not df.empty:
                     logger.debug(f"PO[pw] success via {'proxy' if use_proxy else 'direct'} on {bname}")
                     return df
                 logger.debug(f"PO[pw] attempt failed on {bname} ({'proxy' if use_proxy else 'direct'})")
     return None
 
-
 # -------------------- public API --------------------
-
 __all__ = ["fetch_po_ohlc"]
 
 def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
     """
-    Возвращает DataFrame со свечами (index=time, cols=Open/High/Low/Close).
-    OTC: сначала Playwright → затем статический фолбэк
-    FIN: сначала статик → затем Playwright
+    Вернуть DataFrame (index=time; Open/High/Low/Close).
+    OTC: сперва Playwright, затем httpx; FIN: наоборот.
     """
     base_paths_fin = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
         "https://pocketoption.com/en/chart-new/?asset={asset}",
         "https://pocketoption.com/ru/chart-new/?asset={asset}",
-        # альтернативные страницы торговли
-        "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
     ]
-
     base_paths_otc = [
-        # для OTC сначала trade-страницы — там чаще прилетает XHR/ws
-        "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
         "https://pocketoption.com/en/chart-new/?asset={asset}",
@@ -374,8 +336,16 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
     ]
-
     base_paths = base_paths_otc if otc else base_paths_fin
+
+    # опциональный самотест httpx-прокси
+    if SELFTEST:
+        try:
+            with _client() as c:
+                ip = c.get("https://api.ipify.org?format=json", timeout=6).text
+                logger.debug(f"PO[httpx][selftest] ipify -> {ip[:120]}")
+        except Exception as e:
+            logger.debug(f"PO[httpx][selftest] failed: {e}")
 
     deadline_at = time.time() + PO_SCRAPE_DEADLINE
     candidates = _asset_candidates(symbol, otc=otc)
