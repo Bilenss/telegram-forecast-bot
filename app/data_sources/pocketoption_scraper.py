@@ -197,22 +197,22 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
 
     launcher = getattr(pw, browser_name)
     browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
-context = browser.new_context(
-    user_agent=random.choice(UAS),
-    ignore_https_errors=True,  # 🆕 важно при прокси
-    locale="en-US",
-    timezone_id="UTC",
-    viewport={"width": 1280, "height": 800},
-    service_workers="block",
-    java_script_enabled=True,
-    bypass_csp=True,
-)
-context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
+    context = browser.new_context(
+        user_agent=random.choice(UAS),
+        ignore_https_errors=True,  # 🆕 важно при прокси
+        locale="en-US",
+        timezone_id="UTC",
+        viewport={"width": 1280, "height": 800},
+        service_workers="block",
+        java_script_enabled=True,
+        bypass_csp=True,
+    )
+    context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+    context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
 
-page = context.new_page()
-page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)  # 🆕 чтобы всё goto и wait уважали лимит
-page.set_default_timeout(PO_NAV_TIMEOUT_MS)             # 🆕 общий лимит операций
+    page = context.new_page()
+    page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
+    page.set_default_timeout(PO_NAV_TIMEOUT_MS)
 
     def on_response(resp):
         try:
