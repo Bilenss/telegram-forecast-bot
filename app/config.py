@@ -1,56 +1,106 @@
 # app/config.py
+from __future__ import annotations
 import os
-import logging
+from urllib.parse import urlparse
 
-def _env_int(name: str, default: int) -> int:
+# ---------------- helpers ----------------
+
+def _env_str(name: str, default: str = "") -> str:
+    v = os.environ.get(name)
+    return v if v is not None else default
+
+def _env_int(name: str, default: int = 0) -> int:
+    v = os.environ.get(name)
     try:
-        return int(os.getenv(name, str(default)).strip())
+        return int(v) if v is not None and v != "" else default
     except Exception:
         return default
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
+def _env_float(name: str, default: float = 0.0) -> float:
+    v = os.environ.get(name)
+    try:
+        return float(v) if v is not None and v != "" else default
+    except Exception:
+        return default
+
+def _as_bool_int(v: str | None, default: int = 0) -> int:
     if v is None:
         return default
-    v = v.strip().lower()
-    return v in ("1", "true", "t", "yes", "y", "on")
+    return 1 if str(v).strip().lower() in ("1", "true", "yes", "on") else 0
 
-def _mask_proxy(p: str | None) -> str:
+def _mask_secret(val: str, keep: int = 4) -> str:
+    if not val:
+        return ""
+    if len(val) <= keep:
+        return "*" * len(val)
+    return val[:keep] + "…" + "*" * max(0, len(val) - keep)
+
+def _mask_proxy(p: str) -> str:
     if not p:
         return ""
-    # логируем без логина/пароля
     try:
-        from urllib.parse import urlparse
         u = urlparse(p)
-        host = u.hostname or ""
-        port = f":{u.port}" if u.port else ""
-        return f"{u.scheme}://{host}{port}"
+        hostport = f"{u.hostname}:{u.port}" if u.hostname else ""
+        return f"{u.scheme}://{hostport}"
     except Exception:
         return p
 
-# --- основные переменные проекта ---
-TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
-DEFAULT_LANG         = os.getenv("DEFAULT_LANG", "ru").lower()
-CACHE_TTL_SECONDS    = _env_int("CACHE_TTL_SECONDS", 60)
-ENABLE_CHARTS        = _env_bool("ENABLE_CHARTS", False)
-LOG_LEVEL            = os.getenv("LOG_LEVEL", "INFO").upper()
+# --------------- public config ----------------
 
-# --- PocketOption scraper ---
-PO_PROXY             = os.getenv("PO_PROXY", "").strip() or None
-PO_PROXY_FIRST       = _env_bool("PO_PROXY_FIRST", False)   # False = сначала direct
-PO_BROWSER_ORDER     = os.getenv("PO_BROWSER_ORDER", "firefox,chromium,webkit")
+# Бот / общий
+TELEGRAM_TOKEN      = _env_str("TELEGRAM_TOKEN")
+DEFAULT_LANG        = _env_str("DEFAULT_LANG", "ru")
+CACHE_TTL_SECONDS   = _env_int("CACHE_TTL_SECONDS", 60)
+ENABLE_CHARTS       = _env_int("ENABLE_CHARTS", 0)
+LOG_LEVEL           = _env_str("LOG_LEVEL", "INFO")
+ALPHAVANTAGE_KEY    = _env_str("ALPHAVANTAGE_KEY", "")
 
-PO_HTTPX_TIMEOUT     = float(os.getenv("PO_HTTPX_TIMEOUT", "3.0"))
-PO_IDLE_TIMEOUT_MS   = _env_int("PO_IDLE_TIMEOUT_MS", 8000)
-PO_NAV_TIMEOUT_MS    = _env_int("PO_NAV_TIMEOUT_MS", 20000)
-PO_WAIT_EXTRA_MS     = _env_int("PO_WAIT_EXTRA_MS", 5000)
-PO_SCRAPE_DEADLINE   = _env_int("PO_SCRAPE_DEADLINE", 120)
+# Scraper (HTTPX)
+PO_HTTPX_TIMEOUT    = _env_float("PO_HTTPX_TIMEOUT", 3.0)
 
-# отладочный вывод конфигурации на старте
-def log_effective_config(logger: logging.Logger):
-    logger.debug(
-        "CONFIG: PROXY_FIRST=%s, NAV_TIMEOUT_MS=%s, IDLE_TIMEOUT_MS=%s, WAIT_EXTRA_MS=%s, "
-        "HTTPX_TIMEOUT=%.1f, DEADLINE=%s, BROWSERS=%s, PROXY=%s",
-        PO_PROXY_FIRST, PO_NAV_TIMEOUT_MS, PO_IDLE_TIMEOUT_MS, PO_WAIT_EXTRA_MS,
-        PO_HTTPX_TIMEOUT, PO_SCRAPE_DEADLINE, PO_BROWSER_ORDER, _mask_proxy(PO_PROXY)
+# Scraper (Playwright/общие)
+PO_NAV_TIMEOUT_MS   = _env_int("PO_NAV_TIMEOUT_MS", 12000)
+PO_IDLE_TIMEOUT_MS  = _env_int("PO_IDLE_TIMEOUT_MS", 8000)
+PO_WAIT_EXTRA_MS    = _env_int("PO_WAIT_EXTRA_MS", 3500)
+PO_SCRAPE_DEADLINE  = _env_int("PO_SCRAPE_DEADLINE", 90)
+
+# Включатель скрейпера (той самой константы раньше не хватало)
+PO_ENABLE_SCRAPE    = _env_int("PO_ENABLE_SCRAPE", 1)
+
+# Порядок браузеров Playwright
+PO_BROWSER_ORDER    = _env_str("PO_BROWSER_ORDER", "firefox,chromium,webkit")
+
+# Прокси (одна строка: схемa://user:pass@host:port)
+PO_PROXY            = _env_str("PO_PROXY", "").strip()
+
+# Где пытаться сначала: прокси/прямой (поддерживаем оба названия env)
+PO_PROXY_FIRST = _as_bool_int(
+    os.environ.get("PO_SCRAPE_PROXY_FIRST", os.environ.get("PO_PROXY_FIRST", "0")),
+    default=0,
+)
+
+# ---------------- debug print (без секретов) ----------------
+try:
+    # Лёгкое логирование, без зависимостей от нашего логгера
+    print(
+        "CONFIG:",
+        {
+            "DEFAULT_LANG": DEFAULT_LANG,
+            "CACHE_TTL_SECONDS": CACHE_TTL_SECONDS,
+            "ENABLE_CHARTS": ENABLE_CHARTS,
+            "LOG_LEVEL": LOG_LEVEL,
+            "PO_HTTPX_TIMEOUT": PO_HTTPX_TIMEOUT,
+            "PO_NAV_TIMEOUT_MS": PO_NAV_TIMEOUT_MS,
+            "PO_IDLE_TIMEOUT_MS": PO_IDLE_TIMEOUT_MS,
+            "PO_WAIT_EXTRA_MS": PO_WAIT_EXTRA_MS,
+            "PO_SCRAPE_DEADLINE": PO_SCRAPE_DEADLINE,
+            "PO_ENABLE_SCRAPE": PO_ENABLE_SCRAPE,
+            "PO_BROWSER_ORDER": PO_BROWSER_ORDER,
+            "PO_PROXY_FIRST": PO_PROXY_FIRST,
+            "PO_PROXY": _mask_proxy(PO_PROXY),
+            "TELEGRAM_TOKEN": _mask_secret(TELEGRAM_TOKEN, 6),
+            "ALPHAVANTAGE_KEY": _mask_secret(ALPHAVANTAGE_KEY, 6),
+        }
     )
+except Exception:
+    pass
