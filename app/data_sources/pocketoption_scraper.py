@@ -1,39 +1,42 @@
 # app/data_sources/pocketoption_scraper.py
 from __future__ import annotations
 
-import time
-import random
 import json
+import random
 import re
+import time
 from urllib.parse import urlparse
 
-import pandas as pd
 import httpx
+import pandas as pd
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright
 
-from ..utils.user_agents import UAS
 from ..utils.logging import setup
+from ..utils.user_agents import UAS
 from ..config import (
     PO_PROXY,
-    PO_SCRAPE_DEADLINE,
     PO_PROXY_FIRST,
-    PO_NAV_TIMEOUT_MS,
-    PO_IDLE_TIMEOUT_MS,
-    PO_WAIT_EXTRA_MS,
-    PO_HTTPX_TIMEOUT,
     PO_BROWSER_ORDER,
+    PO_HTTPX_TIMEOUT,
+    PO_IDLE_TIMEOUT_MS,
+    PO_NAV_TIMEOUT_MS,
+    PO_WAIT_EXTRA_MS,
+    PO_SCRAPE_DEADLINE,
 )
 
 logger = setup()
 
+# Какие ответы ловим из сети (часто названия конечных точек со свечами)
 KEYWORDS = (
     "candle", "candles", "ohlc", "ohlcv", "history",
     "chart", "series", "timeseries", "feed", "ticks",
     "tick", "quotes", "quote"
 )
 
-# -------------------- helpers --------------------
+# --------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------
 
 def _headers() -> dict:
     return {
@@ -46,6 +49,7 @@ def _headers() -> dict:
         "Referer": "https://pocketoption.com/",
     }
 
+
 def _client() -> httpx.Client:
     proxies = {"http://": PO_PROXY, "https://": PO_PROXY} if PO_PROXY else None
     return httpx.Client(
@@ -55,7 +59,9 @@ def _client() -> httpx.Client:
         follow_redirects=True,
     )
 
+
 def _pw_proxy():
+    """Преобразуем строку PO_PROXY в словарь для Playwright."""
     if not PO_PROXY:
         return None
     u = urlparse(PO_PROXY)
@@ -68,7 +74,9 @@ def _pw_proxy():
         p["password"] = u.password
     return p
 
+
 def _pw_launch_kwargs(use_proxy: bool) -> dict:
+    """Аргументы для launch(). ignore_https_errors — ТОЛЬКО в new_context()."""
     kw: dict = {
         "headless": True,
         "args": [
@@ -84,7 +92,9 @@ def _pw_launch_kwargs(use_proxy: bool) -> dict:
             logger.debug(f"PO[pw] using proxy: {prox.get('server')}")
     return kw
 
+
 def _asset_candidates(symbol: str, otc: bool) -> list[str]:
+    """Генерируем варианты названий актива (с OTC и без, в т.ч. в нижнем регистре)."""
     base = symbol.upper().replace(" ", "").replace("/", "")
     cands = [base]
     if otc:
@@ -96,14 +106,16 @@ def _asset_candidates(symbol: str, otc: bool) -> list[str]:
     low = base.lower()
     cands += [low, f"{low}_otc", f"{low}-otc", f"{low}otc",
               f"otc_{low}", f"otc-{low}", f"otc{low}"]
-    seen, out = set(), []
+    out, seen = [], set()
     for s in cands:
         if s not in seen:
             seen.add(s)
             out.append(s)
     return out
 
+
 def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
+    """Пытаемся вытащить свечи, зашитые прямо в <script>."""
     try:
         m = re.search(r"\[(?:\{[^\}]*\}\s*,\s*)*\{[^\}]*\}\]", text, re.S)
         if not m:
@@ -129,7 +141,9 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
     except Exception:
         return None
 
+
 def _collect_from_json_object(obj, rows: list):
+    """Из произвольного JSON собираем массив словарей с ключами O/H/L/C."""
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
@@ -165,7 +179,9 @@ def _collect_from_json_object(obj, rows: list):
         except Exception:
             continue
 
-# -------------------- static try --------------------
+# --------------------------------------------------------------------
+# Статическая попытка (httpx)
+# --------------------------------------------------------------------
 
 def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     with _client() as client:
@@ -190,16 +206,20 @@ def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: floa
             time.sleep(0.3)
     return None
 
-# -------------------- playwright --------------------
+# --------------------------------------------------------------------
+# Playwright
+# --------------------------------------------------------------------
 
-def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool):
-    rows = []
+def _playwright_attempt_with_browser(
+    pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool
+):
+    rows: list[list] = []
 
-    launcher = getattr(pw, browser_name)
+    launcher = getattr(pw, browser_name)  # pw.firefox / pw.chromium / pw.webkit
     browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
     context = browser.new_context(
         user_agent=random.choice(UAS),
-        ignore_https_errors=True,  # 🆕 важно при прокси
+        ignore_https_errors=True,          # Важно: здесь, а не в launch()
         locale="en-US",
         timezone_id="UTC",
         viewport={"width": 1280, "height": 800},
@@ -207,14 +227,23 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         java_script_enabled=True,
         bypass_csp=True,
     )
-    context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-    context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
+    context.add_init_script(
+        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+    )
+    # Режем тяжёлые ресурсы
+    context.route(
+        "**/*",
+        lambda r: r.abort()
+        if r.request.resource_type in ("image", "font", "stylesheet", "media")
+        else r.continue_(),
+    )
 
     page = context.new_page()
-    page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)  # 🆕 чтобы всё goto и wait уважали лимит
-    page.set_default_timeout(PO_NAV_TIMEOUT_MS)             # 🆕 общий лимит операций
+    page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
+    page.set_default_timeout(PO_NAV_TIMEOUT_MS)
 
     def on_response(resp):
+        # фильтруем не-PO домены
         try:
             host = urlparse(resp.url).hostname or ""
         except Exception:
@@ -225,12 +254,13 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
         url_l = resp.url.lower()
         if not any(k in url_l for k in KEYWORDS):
             return
+
+        # Тип контента может быть text/plain → пробуем json(), затем text()→json
         try:
             payload = resp.json()
         except Exception:
             try:
-                txt = resp.text()
-                payload = json.loads(txt)
+                payload = json.loads(resp.text())
             except Exception:
                 return
 
@@ -257,12 +287,11 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
                 if rows:
                     break
 
+                # запасной вариант: свечи в HTML
                 try:
                     html = page.content()
                     df_from_html = _parse_embedded_candles(html)
                     if df_from_html is not None and not df_from_html.empty:
-                        context.close()
-                        browser.close()
                         return df_from_html.tail(limit)
                 except Exception:
                     pass
@@ -287,6 +316,7 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
     )
     return df if not df.empty else None
 
+
 def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     browser_order = [b.strip() for b in PO_BROWSER_ORDER.split(",") if b.strip()]
     direct_first = not PO_PROXY_FIRST
@@ -297,29 +327,61 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: 
             for bname in browser_order:
                 if time.time() > deadline_at:
                     return None
-                df = _playwright_attempt_with_browser(pw, bname, asset, base_paths, limit, deadline_at, use_proxy)
+                df = _playwright_attempt_with_browser(
+                    pw, bname, asset, base_paths, limit, deadline_at, use_proxy
+                )
                 if df is not None and not df.empty:
-                    logger.debug(f"PO[pw] success via {'proxy' if use_proxy else 'direct'} on {bname}")
+                    logger.debug(
+                        f"PO[pw] success via {'proxy' if use_proxy else 'direct'} on {bname}"
+                    )
                     return df
-                logger.debug(f"PO[pw] attempt failed on {bname} ({'proxy' if use_proxy else 'direct'})")
+                logger.debug(
+                    f"PO[pw] attempt failed on {bname} ({'proxy' if use_proxy else 'direct'})"
+                )
     return None
 
-# -------------------- public API --------------------
+# --------------------------------------------------------------------
+# Public API
+# --------------------------------------------------------------------
 
 __all__ = ["fetch_po_ohlc"]
 
-def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
+def fetch_po_ohlc(
+    symbol: str,
+    timeframe: str = "5m",
+    limit: int = 300,
+    otc: bool = False,
+) -> pd.DataFrame:
+    """
+    Возвращает DataFrame со свечами (index=time, cols=Open/High/Low/Close).
+    Для FIN: сначала пробуем статикой, затем Playwright.
+    Для OTC: наоборот — сначала Playwright, затем статикой.
+    """
+    # Набор URL, которые чаще работают без авторизации
     base_paths_fin = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
         "https://pocketoption.com/en/chart-new/?asset={asset}",
         "https://pocketoption.com/ru/chart-new/?asset={asset}",
+        # иногда и фин. пары отдают данные с trade-страниц
         "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade/{asset}/",
         "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
     ]
-    base_paths_otc = base_paths_fin[::-1]  # те же, но приоритет наоборот
+
+    # Для OTC чаще «стреляют» trade-страницы → ставим их раньше
+    base_paths_otc = [
+        "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade/{asset}/",
+        "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
+        "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
+        "https://pocketoption.com/en/chart-new/?asset={asset}",
+        "https://pocketoption.com/ru/chart-new/?asset={asset}",
+        "https://pocketoption.com/en/chart/?asset={asset}",
+        "https://pocketoption.com/ru/chart/?asset={asset}",
+    ]
+
     base_paths = base_paths_otc if otc else base_paths_fin
 
     deadline_at = time.time() + PO_SCRAPE_DEADLINE
