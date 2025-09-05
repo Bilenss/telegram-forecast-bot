@@ -211,8 +211,8 @@ def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_pat
     context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
 
     page = context.new_page()
-    page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
-    page.set_default_timeout(PO_NAV_TIMEOUT_MS)
+    page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)  # 🆕 чтобы всё goto и wait уважали лимит
+    page.set_default_timeout(PO_NAV_TIMEOUT_MS)             # 🆕 общий лимит операций
 
     def on_response(resp):
         try:
