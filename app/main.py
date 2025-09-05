@@ -44,7 +44,6 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
         cache.set(cache_key, df)
         return df
 
-    # FIN: сначала PocketOption (если разрешён), затем фолбэк на публичные котировки
     if PO_ENABLE_SCRAPE:
         try:
             df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
@@ -56,6 +55,10 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
     df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe)
     cache.set(cache_key, df)
     return df
+
+# Обёртка для совместимости (если нужен executor):
+def _fetch_ohlc_sync(pair_info, timeframe):
+    return _fetch_ohlc(pair_info, timeframe)
 
 # -------------------- handlers --------------------
 
@@ -118,10 +121,9 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
 
     await m.answer("Готовлю данные..." if lang == 'ru' else "Fetching data...")
 
-    # выполняем блокирующий скрапинг в отдельном потоке + общий таймаут
     try:
         df = await asyncio.wait_for(
-            asyncio.to_thread(_fetch_ohlc_sync, info, timeframe),
+            asyncio.to_thread(_fetch_ohlc, info, timeframe),
             timeout=35
         )
     except asyncio.TimeoutError:
@@ -153,7 +155,7 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
         action, notes = simple_ta_signal(df)
         ind = {}
 
-    # только текст (графики отключены)
+    # результат
     if lang == "ru":
         lines = [f"👉 Прогноз: <b>{action}</b>"]
         if ind:
