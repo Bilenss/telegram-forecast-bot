@@ -29,10 +29,9 @@ INTRO_EN = "Hello! I am a forecasts bot. Choose language."
 def _cache_key(pair_info: dict, timeframe: str) -> str:
     return f"{pair_info.get('po','')}:{timeframe}"
 
-def _fetch_ohlc_sync(pair_info: dict, timeframe: str):
-    """Синхронный сбор данных: OTC только PO, FIN — PO → public fallback."""
-    ck = _cache_key(pair_info, timeframe)
-    df = cache.get(ck)
+def _fetch_ohlc(pair_info: dict, timeframe: str):
+    cache_key = f"{pair_info['po']}:{timeframe}"
+    df = cache.get(cache_key)
     if df is not None:
         return df
 
@@ -41,21 +40,21 @@ def _fetch_ohlc_sync(pair_info: dict, timeframe: str):
     if is_otc:
         if not PO_ENABLE_SCRAPE:
             raise RuntimeError("OTC requires PocketOption scraping (PO_ENABLE_SCRAPE=1)")
-        df = fetch_po_ohlc(pair_info["po"], timeframe=timeframe, otc=True)
-        cache.set(ck, df)
+        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=True)
+        cache.set(cache_key, df)
         return df
 
-    # FIN
+    # FIN: сначала PocketOption (если разрешён), затем фолбэк на публичные котировки
     if PO_ENABLE_SCRAPE:
         try:
-            df = fetch_po_ohlc(pair_info["po"], timeframe=timeframe, otc=False)
-            cache.set(ck, df)
+            df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
+            cache.set(cache_key, df)
             return df
         except Exception as e:
             logger.debug(f"PO scraping failed: {e}")
 
-    df = fetch_public_ohlc(pair_info["yf"], timeframe=timeframe)
-    cache.set(ck, df)
+    df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe)
+    cache.set(cache_key, df)
     return df
 
 # -------------------- handlers --------------------
