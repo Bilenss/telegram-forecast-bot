@@ -27,6 +27,12 @@ from ..config import (
 
 logger = setup()
 
+KEYWORDS = (
+    "candle", "candles", "ohlc", "ohlcv", "history",
+    "chart", "series", "timeseries", "feed", "ticks",
+    "tick", "quotes", "quote"
+)
+
 # -------------------- helpers --------------------
 
 def _headers() -> dict:
@@ -87,7 +93,6 @@ def _asset_candidates(symbol: str, otc: bool) -> list[str]:
             f"OTC_{base}", f"OTC-{base}", f"OTC{base}",
             f"{base}_otc", f"{base}-otc", f"{base}otc",
         ]
-    # на всякий случай — нижний регистр
     low = base.lower()
     cands += [low, f"{low}_otc", f"{low}-otc", f"{low}otc",
               f"otc_{low}", f"otc-{low}", f"otc{low}"]
@@ -125,7 +130,6 @@ def _parse_embedded_candles(text: str) -> pd.DataFrame | None:
         return None
 
 def _collect_from_json_object(obj, rows: list):
-    """Находит массив свечей в произвольном JSON (ключи o/h/l/c или open/high/low/close)."""
     def find_list(x):
         if isinstance(x, list) and x and isinstance(x[0], dict):
             keys = set(map(str.lower, x[0].keys()))
@@ -161,7 +165,7 @@ def _collect_from_json_object(obj, rows: list):
         except Exception:
             continue
 
-# -------------------- static try (httpx) --------------------
+# -------------------- static try --------------------
 
 def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: float) -> pd.DataFrame | None:
     with _client() as client:
@@ -186,75 +190,89 @@ def _try_static(asset: str, base_paths: list[str], limit: int, deadline_at: floa
             time.sleep(0.3)
     return None
 
-# -------------------- playwright tries --------------------
+# -------------------- playwright --------------------
 
 def _playwright_attempt_with_browser(pw, browser_name: str, asset: str, base_paths, limit, deadline_at, use_proxy: bool):
-    rows: list[list] = []
+    rows = []
 
-    launcher = getattr(pw, browser_name)  # pw.firefox / pw.chromium / pw.webkit
+    launcher = getattr(pw, browser_name)
     browser = launcher.launch(**_pw_launch_kwargs(use_proxy))
     context = browser.new_context(
-        ignore_https_errors=True,     # <-- сюда, не в launch()
         user_agent=random.choice(UAS),
         locale="en-US",
         timezone_id="UTC",
         viewport={"width": 1280, "height": 800},
+        service_workers="block",
+        java_script_enabled=True,
+        bypass_csp=True,
     )
     context.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
-    # режем тяжёлые ресурсы
     context.route("**/*", lambda r: r.abort() if r.request.resource_type in ("image", "font", "stylesheet", "media") else r.continue_())
     page = context.new_page()
 
-    # перехват только карманных JSON
     def on_response(resp):
         try:
-            host = (urlparse(resp.url).hostname or "").lower()
+            host = urlparse(resp.url).hostname or ""
         except Exception:
             return
-        if "pocketoption.com" not in host:
+        if not host.endswith("pocketoption.com"):
             return
-        url = resp.url.lower()
-        # только потенциальные свечи
-        if not any(k in url for k in ("candle", "candles", "ohlc", "history", "chart", "series", "timeseries")):
+
+        url_l = resp.url.lower()
+        if not any(k in url_l for k in KEYWORDS):
             return
         try:
-            payload = resp.json()  # иногда text/plain, но json() в PW всё равно парсит
+            payload = resp.json()
         except Exception:
-            return
+            try:
+                txt = resp.text()
+                payload = json.loads(txt)
+            except Exception:
+                return
+
         _collect_from_json_object(payload, rows)
-        logger.debug(f"PO[pw][{browser_name}] JSON {url} -> parsed")
+        logger.debug(f"PO[pw][{browser_name}] JSON {resp.url} -> parsed")
 
     page.on("response", on_response)
 
-    for tpl in base_paths:
-        if time.time() > deadline_at:
-            break
-        url = tpl.format(asset=asset)
-        try:
-            logger.debug(f"PO[pw][{browser_name}] goto {url}")
-            page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
-            except Exception:
-                pass
-            # networkidle на SPA может не наступать — ловим и идём дальше
-            try:
-                page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
-            except Exception:
-                pass
-            page.wait_for_timeout(PO_WAIT_EXTRA_MS)
-            if rows:
+    try:
+        for tpl in base_paths:
+            if time.time() > deadline_at:
                 break
-        except PWTimeout as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation timeout {url}: {e}")
-        except Exception as e:
-            logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
+            url = tpl.format(asset=asset)
+            try:
+                logger.debug(f"PO[pw][{browser_name}] goto {url}")
+                page.goto(url, wait_until="commit", timeout=PO_NAV_TIMEOUT_MS)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+                except Exception:
+                    pass
+                page.wait_for_load_state("networkidle", timeout=PO_IDLE_TIMEOUT_MS)
+                page.wait_for_timeout(PO_WAIT_EXTRA_MS)
 
-    context.close()
-    browser.close()
+                if rows:
+                    break
+
+                try:
+                    html = page.content()
+                    df_from_html = _parse_embedded_candles(html)
+                    if df_from_html is not None and not df_from_html.empty:
+                        context.close()
+                        browser.close()
+                        return df_from_html.tail(limit)
+                except Exception:
+                    pass
+            except PWTimeout as e:
+                logger.debug(f"PO[pw][{browser_name}] navigation timeout {url}: {e}")
+            except Exception as e:
+                logger.debug(f"PO[pw][{browser_name}] navigation failed {url}: {e}")
+    finally:
+        context.close()
+        browser.close()
 
     if not rows:
         return None
+
     df = (
         pd.DataFrame(rows, columns=["time", "Open", "High", "Low", "Close"])
         .dropna()
@@ -287,9 +305,6 @@ def _try_playwright(asset: str, base_paths: list[str], limit: int, deadline_at: 
 __all__ = ["fetch_po_ohlc"]
 
 def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: bool = False) -> pd.DataFrame:
-    """
-    Вернёт DataFrame OHLC (index=time). Для OTC сначала Playwright, затем статика; для FIN — наоборот.
-    """
     base_paths_fin = [
         "https://pocketoption.com/en/chart/?asset={asset}",
         "https://pocketoption.com/ru/chart/?asset={asset}",
@@ -300,16 +315,7 @@ def fetch_po_ohlc(symbol: str, timeframe: str = "5m", limit: int = 300, otc: boo
         "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
         "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
     ]
-    base_paths_otc = [
-        "https://pocketoption.com/en/cabinet-2/trade/{asset}/",
-        "https://pocketoption.com/en/cabinet/trade/{asset}/",
-        "https://pocketoption.com/en/cabinet/trade_demo/{asset}/",
-        "https://pocketoption.com/en/cabinet-2/trade_demo/{asset}/",
-        "https://pocketoption.com/en/chart-new/?asset={asset}",
-        "https://pocketoption.com/ru/chart-new/?asset={asset}",
-        "https://pocketoption.com/en/chart/?asset={asset}",
-        "https://pocketoption.com/ru/chart/?asset={asset}",
-    ]
+    base_paths_otc = base_paths_fin[::-1]  # те же, но приоритет наоборот
     base_paths = base_paths_otc if otc else base_paths_fin
 
     deadline_at = time.time() + PO_SCRAPE_DEADLINE
