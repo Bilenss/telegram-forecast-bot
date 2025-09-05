@@ -56,10 +56,6 @@ def _fetch_ohlc(pair_info: dict, timeframe: str):
     cache.set(cache_key, df)
     return df
 
-# Обёртка для совместимости (если нужен executor):
-def _fetch_ohlc_sync(pair_info, timeframe):
-    return _fetch_ohlc(pair_info, timeframe)
-
 # -------------------- handlers --------------------
 
 @dp.message_handler(commands=['start'])
@@ -155,7 +151,7 @@ async def timeframe_selected(m: types.Message, state: FSMContext):
         action, notes = simple_ta_signal(df)
         ind = {}
 
-    # результат
+    # только текст (графики отключены)
     if lang == "ru":
         lines = [f"👉 Прогноз: <b>{action}</b>"]
         if ind:
