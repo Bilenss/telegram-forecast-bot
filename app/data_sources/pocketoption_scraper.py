@@ -95,6 +95,20 @@ async def _dismiss_popups(page):
 
 async def _activate_symbol(page, symbol: str, otc: bool):
     logger.debug(f"Try activate symbol: {symbol} (otc={otc})")
+    import re as _re
+    # 0) Попробовать открыть панель выбора активов / поиск
+    try:
+        for cand in [
+            page.get_by_role("button", name=_re.compile("(Актив|Активы|Assets|Asset|Поиск|Search)", _re.I)).first,
+            page.locator('[data-testid="select-asset"]').first,
+        ]:
+            if cand and await cand.count() > 0:
+                await cand.click(timeout=1000); await asyncio.sleep(0.2)
+                break
+    except Exception:
+        pass
+
+    # 1) Прямой клик по видимому тексту
     variants = [symbol, symbol.replace("/", ""), symbol.replace("/", " / "), symbol.replace("/", "-")]
     if otc:
         variants += [f"{symbol} OTC", f"{symbol.replace('/', '')} OTC"]
@@ -107,12 +121,16 @@ async def _activate_symbol(page, symbol: str, otc: bool):
                 return True
         except Exception:
             pass
+
+    # 2) Через поле поиска (RU/EN)
     try:
-        import re as _re
-        box = page.get_by_placeholder(_re.compile("search", _re.I)).first
-        if box:
-            await box.click(); await box.fill(symbol.replace("/", "")); await asyncio.sleep(0.2)
-            await page.keyboard.press("Enter"); logger.debug("Used search box to select symbol")
+        box = page.get_by_placeholder(_re.compile("(search|поиск)", _re.I)).first
+        if box and await box.count() > 0:
+            await box.click()
+            await box.fill(symbol.replace("/", ""))
+            await asyncio.sleep(0.2)
+            await page.keyboard.press("Enter")
+            logger.debug("Used search box to select symbol")
             return True
     except Exception:
         pass
@@ -122,15 +140,27 @@ async def _set_timeframe(page, timeframe: str):
     logger.debug(f"Try set timeframe: {timeframe}")
     tf = timeframe.lower()
     import re as _re
-    cands = [
-        page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)),
-        page.get_by_text(_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)),
-    ]
+
+    aliases = {
+        "15s": ["15s", "15 sec", "15 сек", "15с", "S15"],
+        "30s": ["30s", "30 sec", "30 сек", "30с", "S30"],
+        "1m":  ["1m", "m1", "1 min", "1 мин", "1мин", "М1"],
+        "5m":  ["5m", "m5", "5 min", "5 мин", "5мин", "М5"],
+        "15m": ["15m", "m15", "15 min", "15 мин", "15мин", "М15"],
+        "1h":  ["1h", "h1", "1 hour", "1 ч", "H1"],
+    }
+    look_for = aliases.get(tf, [tf])
+
+    cands = []
+    for label in look_for:
+        cands.append(page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(label)}\b", _re.I)))
+        cands.append(page.get_by_text(_re.compile(rf"\b{_re.escape(label)}\b", _re.I)))
+
     for c in cands:
         try:
             if c and await c.count() > 0:
-                await c.first.click(timeout=800); await asyncio.sleep(0.2)
-                logger.debug(f"Clicked timeframe: {timeframe}")
+                await c.first.click(timeout=800); await asyncio.sleep(0.3)
+                logger.debug(f"Clicked timeframe: {timeframe} via alias")
                 return True
         except Exception:
             pass
@@ -215,15 +245,27 @@ window.__po_frames__ = [];
                 await _activate_symbol(page, symbol, otc)
                 await _set_timeframe(page, timeframe)
 
-                inner_deadline = min(deadline, time.time() + 10)
+                # изменённый блок с увеличенным тайм-аутом и сбором с ВСЕХ фреймов
+                inner_deadline = min(deadline, time.time() + 25)
+
                 while time.time() < inner_deadline and not (collected or collected_ws):
-                    frames = await page.evaluate("(() => { const a = window.__po_frames__ || []; window.__po_frames__ = []; return a; })()")
-                    for fr in frames:
-                        data = _try_json(fr.get("data", ""))
+                    # Считать буфер кадров из КАЖДОГО фрейма страницы
+                    frames_payload = []
+                    for fr in page.frames:
+                        try:
+                            frames_payload.extend(await fr.evaluate(
+                                "() => { const a = window.__po_frames__ || []; window.__po_frames__ = []; return a; }"
+                            ))
+                        except Exception:
+                            pass
+
+                    for frmsg in frames_payload:
+                        data = _try_json(frmsg.get("data", ""))
                         df = _looks_like_ohlc(data)
                         if df is not None:
                             collected_ws.append(df)
-                            logger.debug(f"Captured {len(df)} bars from WS[hook]")
+                            logger.debug(f"Captured {len(df)} bars from WS[hook@frame])")
+
                     await asyncio.sleep(0.25)
 
                 await page.close()
