@@ -22,6 +22,7 @@ _TF_MAP = {
     "15m": ["900", "15m", "resolution=900", "period=900"],
     "1h":  ["3600", "1h", "resolution=3600", "period=3600"],
 }
+
 def _tf_tokens(tf: str) -> List[str]:
     return _TF_MAP.get(tf.lower(), _TF_MAP["15m"])
 
@@ -68,115 +69,122 @@ def _looks_like_ohlc(data) -> Optional[pd.DataFrame]:
         logger.debug(f"parse payload err: {e}")
     return None
 
+# Для сбора WebSocket-данных со страницы (включая iframe)
+collected_ws: List[List[dict]] = []
+
+def _maybe_ohlc(payload: str) -> Optional[List[dict]]:
+    try:
+        j = json.loads(payload)
+    except Exception:
+        return None
+    if isinstance(j, list) and j and isinstance(j[0], dict):
+        keys = j[0].keys()
+        if {"open", "high", "low", "close"} <= set(map(str.lower, keys)):
+            return j
+    if isinstance(j, dict) and {"open", "high", "low", "close"} <= set(map(str.lower, j.keys())):
+        return [j]
+    return None
+
+def _attach_ws_listeners(page):
+    def on_ws(ws):
+        logger.debug(f"WS opened: {ws.url}")
+        ws.on("framereceived", lambda ev: _on_frame(ev))
+        ws.on("framesent",     lambda ev: _on_frame(ev))
+    def _on_frame(ev):
+        try:
+            bars = _maybe_ohlc(ev["payload"])
+            if bars:
+                collected_ws.append(bars)
+        except Exception:
+            pass
+    page.on("websocket", on_ws)
+
 async def _dismiss_popups(page):
-    texts = [
-        "Accept", "I agree", "Agree", "Allow all", "OK", "Got it",
-        "Принять", "Согласен", "Хорошо", "Понятно", "Разрешить все",
-    ]
+    texts = ["Accept", "I agree", "Allow all", "OK", "Принять", "Согласен", "Хорошо"]
     import re as _re
     for t in texts:
         try:
             btn = page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
             if btn and await btn.count() > 0:
-                await btn.click(timeout=800); await asyncio.sleep(0.1)
+                await btn.click(timeout=800)
+                await asyncio.sleep(0.1)
                 logger.debug(f"Popup dismissed by button: {t}")
                 break
-        except Exception:
-            pass
-    for t in texts:
-        try:
-            lnk = page.get_by_role("link", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
-            if lnk and await lnk.count() > 0:
-                await lnk.click(timeout=800); await asyncio.sleep(0.1)
-                logger.debug(f"Popup dismissed by link: {t}")
-                break
-        except Exception:
+        except:
             pass
 
 async def _activate_symbol(page, symbol: str, otc: bool):
     logger.debug(f"Try activate symbol: {symbol} (otc={otc})")
-    import re as _re
-    # 0) Попробовать открыть панель выбора активов / поиск
-    try:
-        for cand in [
-            page.get_by_role("button", name=_re.compile("(Актив|Активы|Assets|Asset|Поиск|Search)", _re.I)).first,
-            page.locator('[data-testid="select-asset"]').first,
-        ]:
-            if cand and await cand.count() > 0:
-                await cand.click(timeout=1000); await asyncio.sleep(0.2)
+    import re
+    # Универсальный селектор активов (UI на английском)
+    for sel in ['[data-testid="select-asset"]', 'button:has-text("Assets")']:
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                await loc.click(timeout=1500)
+                await asyncio.sleep(0.2)
                 break
-    except Exception:
-        pass
+        except:
+            pass
 
-    # 1) Прямой клик по видимому тексту
     variants = [symbol, symbol.replace("/", ""), symbol.replace("/", " / "), symbol.replace("/", "-")]
     if otc:
         variants += [f"{symbol} OTC", f"{symbol.replace('/', '')} OTC"]
     for v in variants:
         try:
             el = page.get_by_text(v, exact=True)
-            if el and await el.count() > 0:
-                await el.first.click(timeout=800); await asyncio.sleep(0.2)
+            if await el.count() > 0:
+                await el.first.click(timeout=1000)
+                await asyncio.sleep(0.2)
                 logger.debug(f"Clicked symbol text: {v}")
                 return True
-        except Exception:
+        except:
             pass
 
-    # 2) Через поле поиска (RU/EN)
     try:
-        box = page.get_by_placeholder(_re.compile("(search|поиск)", _re.I)).first
-        if box and await box.count() > 0:
+        box = page.get_by_placeholder(re.compile("search", re.I)).first
+        if await box.count() == 0:
+            box = page.locator('input[type="search"]').first
+        if await box.count() > 0:
             await box.click()
             await box.fill(symbol.replace("/", ""))
             await asyncio.sleep(0.2)
             await page.keyboard.press("Enter")
             logger.debug("Used search box to select symbol")
             return True
-    except Exception:
+    except:
         pass
+
     return False
 
 async def _set_timeframe(page, timeframe: str):
     logger.debug(f"Try set timeframe: {timeframe}")
     tf = timeframe.lower()
-    import re as _re
+    import re
 
     aliases = {
-        "15s": ["15s", "15 sec", "15 сек", "15с", "S15"],
-        "30s": ["30s", "30 sec", "30 сек", "30с", "S30"],
-        "1m":  ["1m", "m1", "1 min", "1 мин", "1мин", "М1"],
-        "5m":  ["5m", "m5", "5 min", "5 мин", "5мин", "М5"],
-        "15m": ["15m", "m15", "15 min", "15 мин", "15мин", "М15"],
-        "1h":  ["1h", "h1", "1 hour", "1 ч", "H1"],
+        "15s": ["15s", "S15"],
+        "30s": ["30s", "S30"],
+        "1m":  ["1m", "m1", "M1", "1 min"],
+        "5m":  ["5m", "m5", "M5", "5 min"],
+        "15m": ["15m", "m15", "M15", "15 min"],
+        "1h":  ["1h", "h1", "H1", "1 hour"],
     }
     look_for = aliases.get(tf, [tf])
 
-    cands = []
     for label in look_for:
-        cands.append(page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(label)}\b", _re.I)))
-        cands.append(page.get_by_text(_re.compile(rf"\b{_re.escape(label)}\b", _re.I)))
-
-    for c in cands:
-        try:
-            if c and await c.count() > 0:
-                await c.first.click(timeout=800); await asyncio.sleep(0.3)
-                logger.debug(f"Clicked timeframe: {timeframe} via alias")
-                return True
-        except Exception:
-            pass
-    return False
-
-def _try_json(s: str):
-    try:
-        return json.loads(s)
-    except Exception:
-        m = re.search(r"(\{.*\}|\[.*\])", s, flags=re.S)
-        if m:
+        for sel in [f'button:has-text("{label}")', f'text="{label}"']:
             try:
-                return json.loads(m.group(1))
-            except Exception:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=1000)
+                    await asyncio.sleep(0.3)
+                    logger.debug(f"Clicked timeframe via alias: {label}")
+                    return True
+            except:
                 pass
-    return None
+
+    return False
 
 async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1h"]="15m", otc: bool=False) -> pd.DataFrame:
     if not PO_ENABLE_SCRAPE:
@@ -186,86 +194,55 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
 
     ua = random.choice(UAS)
     collected: List[pd.DataFrame] = []
-    collected_ws: List[pd.DataFrame] = []
     deadline = time.time() + PO_SCRAPE_DEADLINE
-    entry_url = PO_ENTRY_URL or "https://pocketoption.com/ru/cabinet/try-demo/"
+    entry_url = PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
 
     async with async_playwright() as p:
         for brand in [x.strip() for x in PO_BROWSER_ORDER.split(",") if x.strip()]:
-            browser = ctx = page = None
+            browser, ctx, page = None, None, None
             try:
-                if brand == "firefox":
-                    browser = await p.firefox.launch(headless=True)
-                elif brand == "chromium":
-                    browser = await p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--no-sandbox"])
-                elif brand == "webkit":
-                    browser = await p.webkit.launch(headless=True)
-                else:
-                    continue
-
+                browser = await getattr(p, brand).launch(headless=True, args=["--no-sandbox"])
                 ctx_kwargs = {
-                    "user_agent": ua,
-                    "viewport": {"width": 1366, "height": 768},
                     "locale": "en-US",
+                    "accept_downloads": True,
+                    "ignore_https_errors": True,
+                    "viewport": {"width": 1366, "height": 768},
+                    "user_agent": ua,
                     "timezone_id": "Europe/London",
+                    "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"}
                 }
                 prox = _proxy_dict()
                 if prox:
                     ctx_kwargs["proxy"] = prox
 
                 ctx = await browser.new_context(**ctx_kwargs)
-                await ctx.add_init_script("""
-window.__po_frames__ = [];
-(function(){
-  const OrigWS = window.WebSocket;
-  window.WebSocket = function(url, prot){
-    const ws = prot ? new OrigWS(url, prot) : new OrigWS(url);
-    ws.addEventListener("message", function(ev){
-      try {
-        const push = s => { try { window.__po_frames__.push({t: Date.now(), data: s}); } catch(e){} };
-        if (typeof ev.data === "string") push(ev.data);
-        else if (ev.data instanceof Blob){ const r=new FileReader(); r.onload=()=>push(r.result); r.readAsText(ev.data); }
-        else if (ev.data instanceof ArrayBuffer){ try{ push(new TextDecoder().decode(ev.data)); }catch(e){} }
-      } catch(e){}
-    });
-    return ws;
-  };
-  window.WebSocket.prototype = OrigWS.prototype;
-})();
-                """)
-
                 page = await ctx.new_page()
+                _attach_ws_listeners(page)
+
                 page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
                 page.set_default_timeout(max(PO_IDLE_TIMEOUT_MS, PO_NAV_TIMEOUT_MS))
 
                 await page.goto(entry_url, wait_until="commit")
-                await asyncio.sleep(PO_WAIT_EXTRA_MS / 1000.0)
+                await asyncio.sleep(PO_WAIT_EXTRA_MS / 1000)
 
                 await _dismiss_popups(page)
                 await _activate_symbol(page, symbol, otc)
                 await _set_timeframe(page, timeframe)
 
-                # изменённый блок с увеличенным тайм-аутом и сбором с ВСЕХ фреймов
                 inner_deadline = min(deadline, time.time() + 25)
-
-                while time.time() < inner_deadline and not (collected or collected_ws):
-                    # Считать буфер кадров из КАЖДОГО фрейма страницы
-                    frames_payload = []
+                while time.time() < inner_deadline and not collected_ws:
+                    # Poll iframe data and any accumulated WS frames
                     for fr in page.frames:
                         try:
-                            frames_payload.extend(await fr.evaluate(
+                            payloads = await fr.evaluate(
                                 "() => { const a = window.__po_frames__ || []; window.__po_frames__ = []; return a; }"
-                            ))
-                        except Exception:
+                            )
+                            for p in payloads:
+                                bars = _maybe_ohlc(p["data"] if isinstance(p, dict) else p)
+                                if bars:
+                                    collected_ws.append(bars)
+                        except:
                             pass
-
-                    for frmsg in frames_payload:
-                        data = _try_json(frmsg.get("data", ""))
-                        df = _looks_like_ohlc(data)
-                        if df is not None:
-                            collected_ws.append(df)
-                            logger.debug(f"Captured {len(df)} bars from WS[hook@frame])")
-
                     await asyncio.sleep(0.25)
 
                 await page.close()
@@ -276,20 +253,20 @@ window.__po_frames__ = [];
                     break
 
             except Exception as e:
-                logger.warning(f"Browser loop error: {e}")
+                logger.warning(f"Error in {brand} attempt: {e}")
                 with contextlib.suppress(Exception):
-                    if page: await page.close()
-                with contextlib.suppress(Exception):
-                    if ctx: await ctx.close()
-                with contextlib.suppress(Exception):
-                    if browser: await browser.close()
+                    await page.close()
+                    await ctx.close()
+                    await browser.close()
 
-    all_sets = collected + collected_ws
-    if not all_sets:
-        raise RuntimeError(f"PocketOption: no OHLC captured within deadline ({PO_SCRAPE_DEADLINE}s)")
+    if not collected_ws:
+        raise RuntimeError("PocketOption: no OHLC captured within deadline")
 
-    best = max(all_sets, key=lambda d: len(d)).dropna()
-    best = best[~best.index.duplicated(keep="last")]
+    # Parse DataFrames and return the largest valid set
+    dfs = [ _looks_like_ohlc(item) for batch in collected_ws for item in batch if _looks_like_ohlc(item) is not None ]
+    best = max(dfs, key=lambda d: len(d)).dropna().loc[~lambda df: df.index.duplicated(keep='last')]
+
     if len(best) < 30:
         logger.warning(f"Captured only {len(best)} candles; signals may be unstable")
+
     return best
