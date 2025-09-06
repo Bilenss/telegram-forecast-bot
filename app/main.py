@@ -4,12 +4,16 @@ from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 
-from .config import TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS, PO_ENABLE_SCRAPE, ENABLE_CHARTS, LOG_LEVEL
+from .config import (
+    TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS,
+    PO_ENABLE_SCRAPE, PO_STRICT_ONLY, PO_FAST_FAIL_SEC,
+    ENABLE_CHARTS, LOG_LEVEL
+)
 from .states import ForecastStates as ST
 from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
 from .utils.cache import TTLCache
 from .utils.logging import setup
-from .pairs import all_pairs
+from .pairs import all_pairs, PAIRS_FIN
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
@@ -21,30 +25,36 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
-LANG = {"ru": {"hi": "Привет! Выберите язык / Choose language",
-               "mode": "Выберите режим анализа",
-               "category": "Выберите категорию актива",
-               "pair": "Выберите валютную пару",
-               "tf": "Выберите таймфрейм",
-               "processing": "Секунду, анализирую…",
-               "otc_need_po": "OTC доступно только при включённом скрапинге PocketOption.",
-               "no_data": "Не удалось получить данные для {} на таймфрейме {}",
-               "result": "👉 Прогноз: <b>{}</b>",
-               "ind": "📈 Индикаторы: RSI={}; EMAfast={}; EMAslow={}; EMAcrossUp={}; EMAcrossDown={}; MACD={}; MACDs={}; MACDh={}",
-               "notes": "ℹ️ {}",
-               "chart": "График: {}"},
-        "en": {"hi": "Hello! Choose language",
-               "mode": "Choose analysis mode",
-               "category": "Choose asset category",
-               "pair": "Choose pair",
-               "tf": "Choose timeframe",
-               "processing": "One sec, crunching data…",
-               "otc_need_po": "OTC is available only when PocketOption scraping is enabled.",
-               "no_data": "Failed to load data for {} at timeframe {}",
-               "result": "👉 Signal: <b>{}</b>",
-               "ind": "📈 Indicators: RSI={}; EMAfast={}; EMAslow={}; EMAcrossUp={}; EMAcrossDown={}; MACD={}; MACDs={}; MACDh={}",
-               "notes": "ℹ️ {}",
-               "chart": "Chart: {}"}}
+LANG = {
+    "ru": {
+        "hi": "Привет! Выберите язык / Choose language",
+        "mode": "Выберите режим анализа",
+        "category": "Выберите категорию актива",
+        "pair": "Выберите валютную пару",
+        "tf": "Выберите таймфрейм",
+        "processing": "Секунду, анализирую…",
+        "otc_need_po": "OTC доступно только при включённом скрапинге PocketOption.",
+        "no_data": "Не удалось получить данные для {} на таймфрейме {}",
+        "result": "👉 Прогноз: <b>{}</b>",
+        "ind": "📈 Индикаторы: RSI={}; EMAfast={}; EMAslow={}; EMAcrossUp={}; EMAcrossDown={}; MACD={}; MACDs={}; MACDh={}",
+        "notes": "ℹ️ {}",
+        "chart": "График: {}"
+    },
+    "en": {
+        "hi": "Hello! Choose language",
+        "mode": "Choose analysis mode",
+        "category": "Choose asset category",
+        "pair": "Choose pair",
+        "tf": "Choose timeframe",
+        "processing": "One sec, crunching data…",
+        "otc_need_po": "OTC is available only when PocketOption scraping is enabled.",
+        "no_data": "Failed to load data for {} at timeframe {}",
+        "result": "👉 Signal: <b>{}</b>",
+        "ind": "📈 Indicators: RSI={}; EMAfast={}; EMAslow={}; EMAcrossUp={}; EMAcrossDown={}; MACD={}; MACDs={}; MACDh={}",
+        "notes": "ℹ️ {}",
+        "chart": "Chart: {}"
+    }
+}
 
 def tr(lang, key):
     return LANG["ru" if lang == "ru" else "en"][key]
@@ -119,18 +129,21 @@ async def set_timeframe(m: types.Message, state: FSMContext):
         ind = compute_indicators(df)
         action, notes = signal_from_indicators(df, ind)
         msg = [tr(lang, "result").format(action)]
-        msg.append(tr(lang, "ind").format(ind["RSI"], ind["EMA_fast"], ind["EMA_slow"], ind["EMA_cross_up"], ind["EMA_cross_down"], ind["MACD"], ind["MACD_signal"], ind["MACD_hist"]))
+        msg.append(tr(lang, "ind").format(
+            ind["RSI"], ind["EMA_fast"], ind["EMA_slow"], ind["EMA_cross_up"],
+            ind["EMA_cross_down"], ind["MACD"], ind["MACD_signal"], ind["MACD_hist"]
+        ))
         if notes:
             msg.append(tr(lang, "notes").format("; ".join(notes)))
-        await m.answer("\n".join(msg), parse_mode="HTML")
     else:
         action, notes = simple_ta_signal(df)
         msg = [tr(lang, "result").format(action)]
         if notes:
             msg.append(tr(lang, "notes").format("; ".join(notes)))
-        await m.answer("\n".join(msg), parse_mode="HTML")
 
-    # charts optional
+    hint = "(source: may include fallback)" if (PO_ENABLE_SCRAPE and not PO_STRICT_ONLY) else ""
+    await m.answer("\n".join(msg + ([hint] if hint else [])), parse_mode="HTML")
+
     if ENABLE_CHARTS:
         try:
             from .utils.charts import plot_candles
@@ -145,21 +158,50 @@ async def set_timeframe(m: types.Message, state: FSMContext):
 
     await state.finish()
 
+def _strip_otc_name(name: str) -> str:
+    return name.replace(" OTC", "")
+
 async def load_ohlc(pair_info: dict, timeframe: str, category: str):
-    # OTC only with PocketOption (not supported by public feeds)
+    tmo = max(10, PO_FAST_FAIL_SEC)
+
+    # OTC
     if category == "otc":
         if not PO_ENABLE_SCRAPE:
-            raise RuntimeError("OTC: " + tr("ru", "otc_need_po"))
-        df = await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
-        return df
+            raise RuntimeError("OTC requires PO scraping enabled")
+        if PO_STRICT_ONLY:
+            return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
+        # turbo: PO vs approx fallback (по FIN-тикеру той же пары)
+        fin_ticker = next((v["yf"] for k, v in PAIRS_FIN.items() if v["po"] == pair_info["po"]), None)
+        async def t_po(): return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
+        async def t_fb():
+            if not fin_ticker:
+                raise RuntimeError("No FIN fallback for OTC pair")
+            return fetch_public_ohlc(fin_ticker, timeframe=timeframe, limit=400)
 
-    # FIN: if PocketOption scraping enabled, require it (no fallback)
-    if PO_ENABLE_SCRAPE:
-        df = await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
-        return df
-    # Otherwise fallback to public (yfinance)
-    df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
-    return df
+        done, pending = await asyncio.wait({asyncio.create_task(t_po()), asyncio.create_task(t_fb())},
+                                           timeout=tmo, return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+        if not done:
+            raise RuntimeError("Both PO and fallback timed out")
+        return list(done)[0].result()
+
+    # FIN
+    if PO_ENABLE_SCRAPE and not PO_STRICT_ONLY:
+        async def t_po(): return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
+        async def t_fb(): return fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
+        done, pending = await asyncio.wait({asyncio.create_task(t_po()), asyncio.create_task(t_fb())},
+                                           timeout=tmo, return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+        if not done:
+            raise RuntimeError("Both PO and fallback timed out")
+        return list(done)[0].result()
+
+    if PO_ENABLE_SCRAPE and PO_STRICT_ONLY:
+        return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
+
+    return fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
 
 def main():
     if not TELEGRAM_TOKEN:
