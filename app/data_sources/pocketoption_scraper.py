@@ -174,7 +174,14 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
             logger.debug(f"Captured {len(df)} bars from {url}")
 
     deadline = time.time() + PO_SCRAPE_DEADLINE
-    entry_urls = ["https://pocketoption.com/en/trading/","https://pocketoption.com/trading/","https://pocketoption.com/"]
+    entry_urls = [
+        "https://pocketoption.com/en/trading/",
+        "https://www.pocketoption.com/en/trading/",
+        "https://pocketoption.com/trading/",
+        "https://www.pocketoption.com/trading/",
+        "https://pocketoption.com/",
+        "https://www.pocketoption.com/",
+    ]
     ua = random.choice(UAS)
 
     async with async_playwright() as p:
@@ -193,8 +200,17 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
                 ctx_kwargs = {"user_agent": ua, "viewport":{"width":1366,"height":768}, "locale":"en-US"}
                 prox = _proxy_dict()
                 if prox: ctx_kwargs["proxy"] = prox
-                ctx = await browser.new_context(**ctx_kwargs)
+                ctx = await browser.new_context(**{**ctx_kwargs, "accept_downloads": True, "ignore_https_errors": True})
+        # Stealth-ish tweaks to lower bot detection
+        await ctx.add_init_script("""
+Object.defineProperty(navigator, "webdriver", {get: () => undefined});
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, "languages", {get: () => ["en-US","en"]});
+Object.defineProperty(navigator, "platform", {get: () => "Win32"});
+Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
+        """)
                 page = await ctx.new_page()
+        page.on("download", lambda d: logger.debug(f"Download started: {getattr(d, \"suggested_filename\", None)}"))
                 page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
                 page.set_default_timeout(max(PO_IDLE_TIMEOUT_MS, PO_NAV_TIMEOUT_MS))
 
@@ -203,7 +219,14 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
 
                 for url in entry_urls:
                     try:
-                        await page.goto(url, wait_until="domcontentloaded")
+                        try:
+                        await page.goto(url, wait_until="commit")
+                    except Exception as e:
+                        logger.warning(f"goto(commit) warning on {url}: {e}")
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
+                    except Exception as e:
+                        logger.warning(f"wait_for_load_state(domcontentloaded) warning on {url}: {e}")
                         await asyncio.sleep(PO_WAIT_EXTRA_MS/1000.0)
                         await _activate_symbol(page, symbol, otc)
                         await _set_timeframe(page, timeframe)
