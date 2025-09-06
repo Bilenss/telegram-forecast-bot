@@ -28,7 +28,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 # Core
 TELEGRAM_TOKEN = _env_str("TELEGRAM_TOKEN", "")
-DEFAULT_LANG    = _env_str("DEFAULT_LANG", "ru").lower()
+DEFAULT_LANG    = _env_str("DEFAULT_LANG", "en").lower()  # ← было "ru", теперь "en"
 LOG_LEVEL       = _env_str("LOG_LEVEL", "INFO").upper()
 CACHE_TTL_SECONDS = _env_int("CACHE_TTL_SECONDS", 60)
 ENABLE_CHARTS   = _env_bool("ENABLE_CHARTS", False)
@@ -48,11 +48,11 @@ PO_BROWSER_ORDER    = _env_str("PO_BROWSER_ORDER", "firefox,chromium,webkit")
 # ✅ Новые переменные
 PO_ENTRY_URL        = _env_str("PO_ENTRY_URL", "")
 PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)
-PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", True)  # <- По умолчанию теперь True
+PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", True)  # ← По умолчанию теперь True
 
 def _default_entry_url():
-    # Всегда демо-страница без авторизации:
-    return PO_ENTRY_URL or "https://pocketoption.com/ru/cabinet/try-demo/"
+    # всегда демо на EN
+    return PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
 
 # Public sources (не используется, но можно оставить)
 ALPHAVANTAGE_KEY = _env_str("ALPHAVANTAGE_KEY", "")
