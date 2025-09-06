@@ -153,15 +153,11 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
         df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=True)
         return df
 
-    # FIN: try PocketOption if enabled
+    # FIN: if PocketOption scraping enabled, require it (no fallback)
     if PO_ENABLE_SCRAPE:
-        try:
-            df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
-            return df
-        except Exception as e:
-            logger.debug(f"PO scraping failed, fallback to public feed: {e}")
-
-    # Fallback to public (yfinance)
+        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
+        return df
+    # Otherwise fallback to public (yfinance)
     df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
     return df
 
