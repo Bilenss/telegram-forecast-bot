@@ -264,7 +264,9 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
 
     # Parse DataFrames and return the largest valid set
     dfs = [ _looks_like_ohlc(item) for batch in collected_ws for item in batch if _looks_like_ohlc(item) is not None ]
-    best = max(dfs, key=lambda d: len(d)).dropna().loc[~lambda df: df.index.duplicated(keep='last')]
+    best = max(dfs, key=len).dropna()
+best = best.loc[~best.index.duplicated(keep='last')]
+best = best.sort_index()
 
     if len(best) < 30:
         logger.warning(f"Captured only {len(best)} candles; signals may be unstable")
