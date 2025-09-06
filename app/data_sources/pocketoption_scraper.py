@@ -1,7 +1,7 @@
-
+# app/data_sources/pocketoption_scraper.py
 from __future__ import annotations
-import os, json, time, re, random, asyncio, contextlib
-from typing import Literal, List, Optional
+import asyncio, contextlib, json, os, random, re, time
+from typing import List, Literal, Optional
 import pandas as pd
 
 from ..config import (
@@ -15,12 +15,12 @@ from ..utils.logging import setup
 logger = setup(LOG_LEVEL)
 
 _TF_MAP = {
-    "15s": ["15", "15s", "15-sec", "resolution=15", "period=15"],
-    "30s": ["30", "30s", "30-sec", "resolution=30", "period=30"],
-    "1m":  ["60", "1m", "1-min", "resolution=60", "period=60"],
-    "5m":  ["300", "5m", "5-min", "resolution=300", "period=300"],
-    "15m": ["900", "15m", "15-min", "resolution=900", "period=900"],
-    "1h":  ["3600", "1h", "60-min", "resolution=3600", "period=3600"],
+    "15s": ["15", "15s", "resolution=15", "period=15"],
+    "30s": ["30", "30s", "resolution=30", "period=30"],
+    "1m":  ["60", "1m", "resolution=60", "period=60"],
+    "5m":  ["300", "5m", "resolution=300", "period=300"],
+    "15m": ["900", "15m", "resolution=900", "period=900"],
+    "1h":  ["3600", "1h", "resolution=3600", "period=3600"],
 }
 def _tf_tokens(tf: str) -> List[str]:
     return _TF_MAP.get(tf.lower(), _TF_MAP["15m"])
@@ -32,36 +32,65 @@ def _proxy_dict() -> Optional[dict]:
 
 def _looks_like_ohlc(data) -> Optional[pd.DataFrame]:
     try:
+        # {t,o,h,l,c}
         if isinstance(data, dict) and all(k in data for k in ("t","o","h","l","c")):
             t,o,h,l,c = data["t"], data["o"], data["h"], data["l"], data["c"]
             if all(isinstance(x, list) for x in (t,o,h,l,c)) and len(t) > 20:
                 df = pd.DataFrame({"Date": pd.to_datetime(t, unit="s"), "Open": o, "High": h, "Low": l, "Close": c})
                 return df.set_index("Date").sort_index()
-        if isinstance(data, dict) and "candles" in data and isinstance(data["candles"], list) and len(data["candles"]) > 20:
+
+        # {"candles":[{t,o,h,l,c},...]}
+        if isinstance(data, dict) and isinstance(data.get("candles"), list) and len(data["candles"]) > 20:
             rows = data["candles"]
             if all(all(k in r for k in ("t","o","h","l","c")) for r in rows):
                 df = pd.DataFrame([{"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]} for r in rows])
                 return df.set_index("Date").sort_index()
+
+        # [{time/open/high/low/close}...] или короткие ключи
         if isinstance(data, list) and len(data) > 20 and isinstance(data[0], dict):
-            k = data[0].keys()
-            if {"time","open","high","low","close"} <= set(k):
+            ks = set(data[0].keys())
+            if {"time","open","high","low","close"} <= ks:
                 df = pd.DataFrame([{"Date": pd.to_datetime(r["time"], unit="s"), "Open": r["open"], "High": r["high"], "Low": r["low"], "Close": r["close"]} for r in data])
                 return df.set_index("Date").sort_index()
-            if {"t","o","h","l","c"} <= set(k):
+            if {"t","o","h","l","c"} <= ks:
                 df = pd.DataFrame([{"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]} for r in data])
                 return df.set_index("Date").sort_index()
     except Exception as e:
         logger.debug(f"parse payload err: {e}")
     return None
 
-def _url_hint_ok(url: str, symbol: str, tf_tokens: List[str]) -> bool:
+def _url_hint_ok(url: str) -> bool:
     u = url.lower()
-    s = symbol.lower().replace("/", "")
-    any_sym = (symbol.lower() in u) or (s in u)
-    any_tf = any(tok in u for tok in tf_tokens)
-    needles = ["chart","charts","history","candles","ohlc","bars","series","kline","timeseries","feed","marketdata"]
-    likely = any(n in u for n in needles)
-    return likely and (any_sym or any_tf)
+    # расслабляем фильтр: берём всё «похожее» на фид
+    needles = ["chart","history","candles","ohlc","bars","series","kline","timeseries","feed","marketdata","graphql","api"]
+    return any(n in u for n in needles)
+
+async def _dismiss_popups(page):
+    import re as _re
+    texts = [
+        "Accept", "I agree", "Agree", "Allow all", "OK", "Got it",
+        "Принять", "Согласен", "Хорошо", "Понятно", "Разрешить все",
+    ]
+    for t in texts:
+        try:
+            btn = page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
+            if btn and await btn.count() > 0:
+                await btn.click(timeout=800)
+                await asyncio.sleep(0.1)
+                logger.debug(f"Popup dismissed by button: {t}")
+                break
+        except Exception:
+            pass
+    for t in texts:
+        try:
+            lnk = page.get_by_role("link", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
+            if lnk and await lnk.count() > 0:
+                await lnk.click(timeout=800)
+                await asyncio.sleep(0.1)
+                logger.debug(f"Popup dismissed by link: {t}")
+                break
+        except Exception:
+            pass
 
 async def _activate_symbol(page, symbol: str, otc: bool):
     logger.debug(f"Try activate symbol: {symbol} (otc={otc})")
@@ -72,22 +101,18 @@ async def _activate_symbol(page, symbol: str, otc: bool):
         try:
             el = page.get_by_text(v, exact=True)
             if el and await el.count() > 0:
-                await el.first.click(timeout=800)
-                await asyncio.sleep(0.2)
+                await el.first.click(timeout=800); await asyncio.sleep(0.2)
                 logger.debug(f"Clicked symbol text: {v}")
                 return True
         except Exception:
             pass
-    # try search field
+    # Fallback: поиск
     try:
         import re as _re
         box = page.get_by_placeholder(_re.compile("search", _re.I)).first
         if box:
-            await box.click()
-            await box.fill(symbol.replace("/", ""))
-            await asyncio.sleep(0.2)
-            await page.keyboard.press("Enter")
-            logger.debug("Used search box to select symbol")
+            await box.click(); await box.fill(symbol.replace("/", "")); await asyncio.sleep(0.2)
+            await page.keyboard.press("Enter"); logger.debug("Used search box to select symbol")
             return True
     except Exception:
         pass
@@ -95,32 +120,28 @@ async def _activate_symbol(page, symbol: str, otc: bool):
 
 async def _set_timeframe(page, timeframe: str):
     logger.debug(f"Try set timeframe: {timeframe}")
-    tf_label = timeframe.lower()
+    tf = timeframe.lower()
     import re as _re
-    variants = [tf_label, tf_label.upper(), tf_label.replace("h","H")]
-    candidates = [
-        page.get_by_role("button", name=_re.compile("|".join([_re.escape(v) for v in variants]))),
-        page.get_by_text(_re.compile(rf"\b{_re.escape(tf_label)}\b", _re.I)),
+    cands = [
+        page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)),
+        page.get_by_text(_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)),
     ]
-    for cand in candidates:
+    for c in cands:
         try:
-            if cand and await cand.count() > 0:
-                await cand.first.click(timeout=800)
-                await asyncio.sleep(0.2)
+            if c and await c.count() > 0:
+                await c.first.click(timeout=800); await asyncio.sleep(0.2)
                 logger.debug(f"Clicked timeframe: {timeframe}")
                 return True
         except Exception:
             pass
-    # interval menu
+    # Меню "Interval/Timeframe"
     try:
-        interval_btn = page.get_by_role("button", name=_re.compile("interval|timeframe", _re.I)).first
-        if interval_btn:
-            await interval_btn.click(timeout=800)
-            await asyncio.sleep(0.1)
-            opt = page.get_by_text(_re.compile(rf"\b{_re.escape(tf_label)}\b", _re.I)).first
+        btn = page.get_by_role("button", name=_re.compile("interval|timeframe", _re.I)).first
+        if btn:
+            await btn.click(timeout=800); await asyncio.sleep(0.1)
+            opt = page.get_by_text(_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)).first
             if opt:
-                await opt.click(timeout=800)
-                await asyncio.sleep(0.2)
+                await opt.click(timeout=800); await asyncio.sleep(0.2)
                 logger.debug(f"Selected timeframe from menu: {timeframe}")
                 return True
     except Exception:
@@ -135,14 +156,14 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
 
     tf_tokens = _tf_tokens(timeframe)
     collected: List[pd.DataFrame] = []
+    collected_ws: List[pd.DataFrame] = []
     seen = set()
 
     async def handle_response(resp):
         url = resp.url
-        if url in seen:
-            return
+        if url in seen: return
         seen.add(url)
-        if not _url_hint_ok(url, symbol, tf_tokens):
+        if not _url_hint_ok(url):  # расслаблено
             return
         try:
             txt = await resp.text()
@@ -152,14 +173,12 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
                 txt = b.decode("utf-8","ignore")
             except Exception:
                 return
-        if not txt:
-            return
+        if not txt: return
         try:
             data = json.loads(txt)
         except Exception:
             m = re.search(r"(\{.*\}|\[.*\])", txt, flags=re.S)
-            if not m:
-                return
+            if not m: return
             try:
                 data = json.loads(m.group(1))
             except Exception:
@@ -168,6 +187,18 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
         if df is not None:
             collected.append(df)
             logger.debug(f"Captured {len(df)} bars from {url}")
+
+    async def on_ws_frame(msg: str):
+        try:
+            m = re.search(r"(\{.*\}|\[.*\])", msg, flags=re.S)
+            if not m: return
+            data = json.loads(m.group(1))
+            df = _looks_like_ohlc(data)
+            if df is not None:
+                collected_ws.append(df)
+                logger.debug(f"Captured {len(df)} bars from WS frame")
+        except Exception:
+            return
 
     deadline = time.time() + PO_SCRAPE_DEADLINE
     entry_urls = [
@@ -193,11 +224,17 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
                     browser = await p.webkit.launch(headless=True)
                 else:
                     continue
-                ctx_kwargs = {"user_agent": ua, "viewport":{"width":1366,"height":768}, "locale":"en-US"}
+
+                ctx_kwargs = {
+                    "user_agent": ua,
+                    "viewport": {"width": 1366, "height": 768},
+                    "locale": "en-US",
+                    "timezone_id": "Europe/London",
+                }
                 prox = _proxy_dict()
                 if prox: ctx_kwargs["proxy"] = prox
+
                 ctx = await browser.new_context(**{**ctx_kwargs, "accept_downloads": True, "ignore_https_errors": True})
-                # stealth-ish
                 await ctx.add_init_script("""
 Object.defineProperty(navigator, "webdriver", {get: () => undefined});
 window.chrome = { runtime: {} };
@@ -205,11 +242,14 @@ Object.defineProperty(navigator, "languages", {get: () => ["en-US","en"]});
 Object.defineProperty(navigator, "platform", {get: () => "Win32"});
 Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
                 """)
+
                 page = await ctx.new_page()
                 page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
                 page.set_default_timeout(max(PO_IDLE_TIMEOUT_MS, PO_NAV_TIMEOUT_MS))
+
+                # подписки
                 page.on("response", lambda r: asyncio.create_task(handle_response(r)))
-                page.on("download", lambda d: logger.debug(f"Download started: {getattr(d, 'suggested_filename', None)}"))
+                page.on("websocket", lambda ws: ws.on("framereceived", lambda m: asyncio.create_task(on_ws_frame(m))))
 
                 for url in entry_urls:
                     try:
@@ -220,24 +260,24 @@ Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
                         try:
                             await page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
                         except Exception as e:
-                            logger.warning(f"wait_for_load_state(domcontentloaded) warning on {url}: {e}")
+                            logger.warning(f'wait_for_load_state("domcontentloaded") warning on {url}: {e}')
 
                         await asyncio.sleep(PO_WAIT_EXTRA_MS/1000.0)
+                        await _dismiss_popups(page)
                         await _activate_symbol(page, symbol, otc)
                         await _set_timeframe(page, timeframe)
 
                         inner_deadline = min(deadline, time.time() + 15)
-                        while time.time() < inner_deadline and (not collected or (len(collected[-1]) < 180)):
+                        while time.time() < inner_deadline and not (collected or collected_ws):
                             await asyncio.sleep(0.25)
 
-                        if collected:
+                        if collected or collected_ws:
                             break
                     except Exception as e:
                         last_err = e
                         continue
 
-                # cleanup and stop if success
-                if collected:
+                if collected or collected_ws:
                     with contextlib.suppress(Exception):
                         await page.close()
                     with contextlib.suppress(Exception):
@@ -261,10 +301,13 @@ Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
                 with contextlib.suppress(Exception):
                     if browser: await browser.close()
 
-    if not collected:
+    all_sets = collected + collected_ws
+    if not all_sets:
         raise RuntimeError(f"PocketOption: no OHLC captured within deadline ({PO_SCRAPE_DEADLINE}s). Last error: {last_err}")
 
-    best = max(collected, key=lambda d: len(d))
+    best = max(all_sets, key=lambda d: len(d))
     best = best.dropna()
-    best = best[~best.index.duplicated(keep='last')]
+    best = best[~best.index.duplicated(keep="last")]
+    if len(best) < 30:
+        logger.warning(f"Captured only {len(best)} candles; signals may be unstable")
     return best
