@@ -47,16 +47,14 @@ PO_BROWSER_ORDER    = _env_str("PO_BROWSER_ORDER", "firefox,chromium,webkit")
 
 # ✅ Новые переменные
 PO_ENTRY_URL        = _env_str("PO_ENTRY_URL", "")
-PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)      # max ожидание результата
-PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", False)    # True = только PO, False = fallback разрешён
+PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)
+PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", True)  # <- По умолчанию теперь True
 
 def _default_entry_url():
-    if PO_ENTRY_URL:
-        return PO_ENTRY_URL
-    return "https://pocketoption.com/ru/cabinet/try-demo/" if DEFAULT_LANG == "ru" \
-           else "https://pocketoption.com/en/trading/"
+    # Всегда демо-страница без авторизации:
+    return PO_ENTRY_URL or "https://pocketoption.com/ru/cabinet/try-demo/"
 
-# Public sources
+# Public sources (не используется, но можно оставить)
 ALPHAVANTAGE_KEY = _env_str("ALPHAVANTAGE_KEY", "")
 
 def _mask_secret(s: str, keep: int = 4) -> str:
@@ -76,7 +74,7 @@ def _mask_proxy(proxy: str) -> str:
     except Exception:
         return proxy
 
-# Print config summary at import-time for logs (without secrets)
+# Print config summary at import-time for logs (без секретов)
 try:
     from .utils.logging import setup
     logger = setup(LOG_LEVEL)
