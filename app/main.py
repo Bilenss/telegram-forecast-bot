@@ -6,18 +6,17 @@ from aiogram.dispatcher import FSMContext
 
 from .config import (
     TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS,
-    PO_ENABLE_SCRAPE, PO_STRICT_ONLY, PO_FAST_FAIL_SEC,
+    PO_ENABLE_SCRAPE, PO_STRICT_ONLY,
     ENABLE_CHARTS, LOG_LEVEL
 )
 from .states import ForecastStates as ST
 from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
 from .utils.cache import TTLCache
 from .utils.logging import setup
-from .pairs import all_pairs, PAIRS_FIN
+from .pairs import all_pairs
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
-from .data_sources.fallback_quotes import fetch_public_ohlc
 
 logger = setup(LOG_LEVEL)
 
@@ -101,8 +100,7 @@ async def set_pair(m: types.Message, state: FSMContext):
         await m.answer(tr(lang, "pair"), reply_markup=pairs_keyboard(pairs))
         return
     await state.update_data(pair=m.text)
-    po_available = bool(PO_ENABLE_SCRAPE)
-    await m.answer(tr(lang, "tf"), reply_markup=timeframe_keyboard(lang, po_available))
+    await m.answer(tr(lang, "tf"), reply_markup=timeframe_keyboard(lang, po_available=True))
     await ST.Timeframe.set()
 
 @dp.message_handler(state=ST.Timeframe)
@@ -141,8 +139,7 @@ async def set_timeframe(m: types.Message, state: FSMContext):
         if notes:
             msg.append(tr(lang, "notes").format("; ".join(notes)))
 
-    hint = "(source: may include fallback)" if (PO_ENABLE_SCRAPE and not PO_STRICT_ONLY) else ""
-    await m.answer("\n".join(msg + ([hint] if hint else [])), parse_mode="HTML")
+    await m.answer("\n".join(msg), parse_mode="HTML")
 
     if ENABLE_CHARTS:
         try:
@@ -158,50 +155,11 @@ async def set_timeframe(m: types.Message, state: FSMContext):
 
     await state.finish()
 
-def _strip_otc_name(name: str) -> str:
-    return name.replace(" OTC", "")
-
 async def load_ohlc(pair_info: dict, timeframe: str, category: str):
-    tmo = max(10, PO_FAST_FAIL_SEC)
-
-    # OTC
-    if category == "otc":
-        if not PO_ENABLE_SCRAPE:
-            raise RuntimeError("OTC requires PO scraping enabled")
-        if PO_STRICT_ONLY:
-            return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
-        # turbo: PO vs approx fallback (по FIN-тикеру той же пары)
-        fin_ticker = next((v["yf"] for k, v in PAIRS_FIN.items() if v["po"] == pair_info["po"]), None)
-        async def t_po(): return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
-        async def t_fb():
-            if not fin_ticker:
-                raise RuntimeError("No FIN fallback for OTC pair")
-            return fetch_public_ohlc(fin_ticker, timeframe=timeframe, limit=400)
-
-        done, pending = await asyncio.wait({asyncio.create_task(t_po()), asyncio.create_task(t_fb())},
-                                           timeout=tmo, return_when=asyncio.FIRST_COMPLETED)
-        for p in pending:
-            p.cancel()
-        if not done:
-            raise RuntimeError("Both PO and fallback timed out")
-        return list(done)[0].result()
-
-    # FIN
-    if PO_ENABLE_SCRAPE and not PO_STRICT_ONLY:
-        async def t_po(): return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
-        async def t_fb(): return fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
-        done, pending = await asyncio.wait({asyncio.create_task(t_po()), asyncio.create_task(t_fb())},
-                                           timeout=tmo, return_when=asyncio.FIRST_COMPLETED)
-        for p in pending:
-            p.cancel()
-        if not done:
-            raise RuntimeError("Both PO and fallback timed out")
-        return list(done)[0].result()
-
-    if PO_ENABLE_SCRAPE and PO_STRICT_ONLY:
-        return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
-
-    return fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)
+    if not PO_ENABLE_SCRAPE:
+        raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
+    otc = (category == "otc")
+    return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=otc)
 
 def main():
     if not TELEGRAM_TOKEN:
