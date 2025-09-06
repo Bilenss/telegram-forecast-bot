@@ -24,7 +24,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
     if v is None or v == "":
         return default
-    return str(v).strip().lower() in ("1","true","yes","y","on")
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 # Core
 TELEGRAM_TOKEN = _env_str("TELEGRAM_TOKEN", "")
@@ -35,15 +35,26 @@ ENABLE_CHARTS   = _env_bool("ENABLE_CHARTS", False)
 PAIR_TIMEFRAME  = _env_str("PAIR_TIMEFRAME", "15m")
 
 # PocketOption scraping (optional)
-PO_ENABLE_SCRAPE = _env_bool("PO_ENABLE_SCRAPE", False)
-PO_PROXY         = _env_str("PO_PROXY", "")
-PO_PROXY_FIRST   = _env_bool("PO_PROXY_FIRST", True)
-PO_SCRAPE_DEADLINE = _env_int("PO_SCRAPE_DEADLINE", 120)
-PO_HTTPX_TIMEOUT = _env_float("PO_HTTPX_TIMEOUT", 3.0)
-PO_NAV_TIMEOUT_MS = _env_int("PO_NAV_TIMEOUT_MS", 20000)
-PO_IDLE_TIMEOUT_MS = _env_int("PO_IDLE_TIMEOUT_MS", 12000)
-PO_WAIT_EXTRA_MS = _env_int("PO_WAIT_EXTRA_MS", 5000)
-PO_BROWSER_ORDER = _env_str("PO_BROWSER_ORDER", "firefox,chromium,webkit")
+PO_ENABLE_SCRAPE    = _env_bool("PO_ENABLE_SCRAPE", False)
+PO_PROXY            = _env_str("PO_PROXY", "")
+PO_PROXY_FIRST      = _env_bool("PO_PROXY_FIRST", True)
+PO_SCRAPE_DEADLINE  = _env_int("PO_SCRAPE_DEADLINE", 120)
+PO_HTTPX_TIMEOUT    = _env_float("PO_HTTPX_TIMEOUT", 3.0)
+PO_NAV_TIMEOUT_MS   = _env_int("PO_NAV_TIMEOUT_MS", 20000)
+PO_IDLE_TIMEOUT_MS  = _env_int("PO_IDLE_TIMEOUT_MS", 12000)
+PO_WAIT_EXTRA_MS    = _env_int("PO_WAIT_EXTRA_MS", 5000)
+PO_BROWSER_ORDER    = _env_str("PO_BROWSER_ORDER", "firefox,chromium,webkit")
+
+# ✅ Новые переменные
+PO_ENTRY_URL        = _env_str("PO_ENTRY_URL", "")
+PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)      # max ожидание результата
+PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", False)    # True = только PO, False = fallback разрешён
+
+def _default_entry_url():
+    if PO_ENTRY_URL:
+        return PO_ENTRY_URL
+    return "https://pocketoption.com/ru/cabinet/try-demo/" if DEFAULT_LANG == "ru" \
+           else "https://pocketoption.com/en/trading/"
 
 # Public sources
 ALPHAVANTAGE_KEY = _env_str("ALPHAVANTAGE_KEY", "")
@@ -54,7 +65,8 @@ def _mask_secret(s: str, keep: int = 4) -> str:
     return s[:keep] + "…" + ("*" * max(0, len(s) - keep))
 
 def _mask_proxy(proxy: str) -> str:
-    if not proxy: return ""
+    if not proxy:
+        return ""
     try:
         u = urlparse(proxy)
         if u.username:
@@ -82,6 +94,9 @@ try:
         "PO_IDLE_TIMEOUT_MS": PO_IDLE_TIMEOUT_MS,
         "PO_WAIT_EXTRA_MS": PO_WAIT_EXTRA_MS,
         "PO_SCRAPE_DEADLINE": PO_SCRAPE_DEADLINE,
+        "PO_ENTRY_URL": _default_entry_url(),
+        "PO_FAST_FAIL_SEC": PO_FAST_FAIL_SEC,
+        "PO_STRICT_ONLY": PO_STRICT_ONLY,
         "ALPHAVANTAGE_KEY": _mask_secret(ALPHAVANTAGE_KEY, 4),
         "TELEGRAM_TOKEN": _mask_secret(TELEGRAM_TOKEN, 6),
         "LOG_LEVEL": LOG_LEVEL,
