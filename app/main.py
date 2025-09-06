@@ -12,7 +12,7 @@ from .utils.logging import setup
 from .pairs import all_pairs
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
-from .data_sources.pocketoption_scraper import fetch_po_ohlc
+from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
 from .data_sources.fallback_quotes import fetch_public_ohlc
 
 logger = setup(LOG_LEVEL)
@@ -150,12 +150,12 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     if category == "otc":
         if not PO_ENABLE_SCRAPE:
             raise RuntimeError("OTC: " + tr("ru", "otc_need_po"))
-        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=True)
+        df = await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=True)
         return df
 
     # FIN: if PocketOption scraping enabled, require it (no fallback)
     if PO_ENABLE_SCRAPE:
-        df = fetch_po_ohlc(pair_info['po'], timeframe=timeframe, otc=False)
+        df = await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=False)
         return df
     # Otherwise fallback to public (yfinance)
     df = fetch_public_ohlc(pair_info['yf'], timeframe=timeframe, limit=400)

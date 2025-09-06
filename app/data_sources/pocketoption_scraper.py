@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, json, time, re, random
+import os, json, time, re, random, asyncio
 from typing import Literal, List, Optional
 import pandas as pd
 
@@ -65,98 +65,80 @@ def _url_hint_ok(url: str, symbol: str, tf_tokens: List[str]) -> bool:
     likely = any(n in u for n in needles)
     return likely and (any_sym or any_tf)
 
-def _activate_symbol(page, symbol: str, otc: bool):
-    # Try common variants of the symbol in UI
+async def _activate_symbol(page, symbol: str, otc: bool):
     variants = [symbol, symbol.replace("/", ""), symbol.replace("/", " / "), symbol.replace("/", "-")]
-    # Sometimes "OTC" is appended
     if otc:
         variants += [f"{symbol} OTC", f"{symbol.replace('/', '')} OTC"]
 
     for v in variants:
         try:
             el = page.get_by_text(v, exact=True)
-            if el and el.count() > 0:
-                el.first.click(timeout=800)
-                time.sleep(0.3)
+            if el and await el.count() > 0:
+                await el.first.click(timeout=800)
+                await asyncio.sleep(0.2)
                 logger.debug(f"Clicked symbol text: {v}")
                 return True
         except Exception:
             pass
 
-    # Fallback: search field if present
     try:
-        # search inputs often have placeholder 'Search' or 'Search assets'
-        input_box = page.get_by_placeholder(re.compile("search", re.I)).first
+        import re as _re
+        input_box = page.get_by_placeholder(_re.compile("search", _re.I)).first
         if input_box:
-            input_box.click()
-            input_box.fill(symbol.replace("/", ""))
-            time.sleep(0.3)
-            # press Enter or click the first suggestion
-            page.keyboard.press("Enter")
+            await input_box.click()
+            await input_box.fill(symbol.replace("/", ""))
+            await asyncio.sleep(0.2)
+            await page.keyboard.press("Enter")
             logger.debug("Used search box to select symbol")
-            return True
-    except Exception:
-        pass
-
-    # as last resort, try to click any element containing base currency
-    base = symbol.split("/")[0]
-    try:
-        el = page.get_by_text(re.compile(base, re.I)).first
-        if el:
-            el.click(timeout=800)
-            time.sleep(0.2)
             return True
     except Exception:
         pass
     return False
 
-def _set_timeframe(page, timeframe: str):
-    # Try direct button like "1m", "5m", "15m", "1h"
+async def _set_timeframe(page, timeframe: str):
     tf_label = timeframe.lower()
-    label_variants = [tf_label, tf_label.upper(), tf_label.replace("h","H")]
-    # TradingView-like 'Interval' menu button
+    variants = [tf_label, tf_label.upper(), tf_label.replace("h","H")]
+    import re as _re
     candidates = [
-        page.get_by_role("button", name=re.compile("|".join([re.escape(v) for v in label_variants]))),
-        page.get_by_text(re.compile(rf"\b{re.escape(tf_label)}\b", re.I)),
+        page.get_by_role("button", name=_re.compile("|".join([_re.escape(v) for v in variants]))),
+        page.get_by_text(_re.compile(rf"\b{_re.escape(tf_label)}\b", _re.I)),
     ]
     for cand in candidates:
         try:
-            if cand and cand.count() > 0:
-                cand.first.click(timeout=800)
-                time.sleep(0.2)
+            if cand and await cand.count() > 0:
+                await cand.first.click(timeout=800)
+                await asyncio.sleep(0.2)
                 logger.debug(f"Clicked timeframe: {timeframe}")
                 return True
         except Exception:
             pass
 
-    # Fallback: open interval menu then choose
     try:
-        # common aria-labels
-        interval_btn = page.get_by_role("button", name=re.compile("interval|timeframe", re.I)).first
+        interval_btn = page.get_by_role("button", name=_re.compile("interval|timeframe", _re.I)).first
         if interval_btn:
-            interval_btn.click(timeout=800)
-            time.sleep(0.2)
-            opt = page.get_by_text(re.compile(rf"\b{re.escape(tf_label)}\b", re.I)).first
+            await interval_btn.click(timeout=800)
+            await asyncio.sleep(0.1)
+            opt = page.get_by_text(_re.compile(rf"\b{_re.escape(tf_label)}\b", _re.I)).first
             if opt:
-                opt.click(timeout=800)
-                time.sleep(0.2)
+                await opt.click(timeout=800)
+                await asyncio.sleep(0.2)
                 logger.debug(f"Selected timeframe from menu: {timeframe}")
                 return True
     except Exception:
         pass
     return False
 
-def fetch_po_ohlc(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1h"]="15m", otc: bool=False) -> pd.DataFrame:
+async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1h"]="15m", otc: bool=False) -> pd.DataFrame:
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PO scraping disabled (set PO_ENABLE_SCRAPE=1)")
 
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     tf_tokens = _tf_tokens(timeframe)
     collected: List[pd.DataFrame] = []
     seen = set()
 
-    def on_response(resp):
+    async def handle_response(resp):
         url = resp.url
         if url in seen:
             return
@@ -164,10 +146,11 @@ def fetch_po_ohlc(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1
         if not _url_hint_ok(url, symbol, tf_tokens):
             return
         try:
-            txt = resp.text()
+            txt = await resp.text()
         except Exception:
             try:
-                txt = resp.body().decode("utf-8","ignore")
+                b = await resp.body()
+                txt = b.decode("utf-8","ignore")
             except Exception:
                 return
         if not txt:
@@ -191,60 +174,77 @@ def fetch_po_ohlc(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1
     entry_urls = ["https://pocketoption.com/en/trading/","https://pocketoption.com/trading/","https://pocketoption.com/"]
     ua = random.choice(UAS)
 
-    from contextlib import suppress
-    with sync_playwright() as p:
+    async with async_playwright() as p:
         last_err = None
         for brand in [x.strip() for x in PO_BROWSER_ORDER.split(",") if x.strip()]:
             browser = None; ctx=None; page=None
             try:
                 if brand == "firefox":
-                    browser = p.firefox.launch(headless=True)
+                    browser = await p.firefox.launch(headless=True)
                 elif brand == "chromium":
-                    browser = p.chromium.launch(headless=True, args=["--disable-dev-shm-usage","--no-sandbox"])
+                    browser = await p.chromium.launch(headless=True, args=["--disable-dev-shm-usage","--no-sandbox"])
                 elif brand == "webkit":
-                    browser = p.webkit.launch(headless=True)
+                    browser = await p.webkit.launch(headless=True)
                 else:
                     continue
                 ctx_kwargs = {"user_agent": ua, "viewport":{"width":1366,"height":768}, "locale":"en-US"}
                 prox = _proxy_dict()
                 if prox: ctx_kwargs["proxy"] = prox
-                ctx = browser.new_context(**ctx_kwargs)
-                page = ctx.new_page()
+                ctx = await browser.new_context(**ctx_kwargs)
+                page = await ctx.new_page()
                 page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
                 page.set_default_timeout(max(PO_IDLE_TIMEOUT_MS, PO_NAV_TIMEOUT_MS))
-                page.on("response", on_response)
+
+                # page.on callback must not await -> schedule
+                page.on("response", lambda r: asyncio.create_task(handle_response(r)))
 
                 for url in entry_urls:
-                    with suppress(Exception):
-                        page.goto(url, wait_until="domcontentloaded")
-                        time.sleep(PO_WAIT_EXTRA_MS/1000.0)
-                        # try activate symbol/timeframe
-                        _activate_symbol(page, symbol, otc)
-                        _set_timeframe(page, timeframe)
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded")
+                        await asyncio.sleep(PO_WAIT_EXTRA_MS/1000.0)
+                        await _activate_symbol(page, symbol, otc)
+                        await _set_timeframe(page, timeframe)
 
-                        # wait until we gather enough
                         inner_deadline = min(deadline, time.time() + 12)
                         while time.time() < inner_deadline and (not collected or (len(collected[-1]) < 180)):
-                            time.sleep(0.25)
+                            await asyncio.sleep(0.25)
 
                         if collected:
                             break
+                    except Exception as e:
+                        last_err = e
+                        continue
+
                 if collected:
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                    with contextlib.suppress(Exception):
+                        await ctx.close()
+                    with contextlib.suppress(Exception):
+                        await browser.close()
                     break
+                else:
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                    with contextlib.suppress(Exception):
+                        await ctx.close()
+                    with contextlib.suppress(Exception):
+                        await browser.close()
             except Exception as e:
                 last_err = e
-            finally:
-                with suppress(Exception):
-                    if page: page.close()
-                with suppress(Exception):
-                    if ctx: ctx.close()
-                with suppress(Exception):
-                    if browser: browser.close()
+                try:
+                    if page: await page.close()
+                except Exception: pass
+                try:
+                    if ctx: await ctx.close()
+                except Exception: pass
+                try:
+                    if browser: await browser.close()
+                except Exception: pass
 
     if not collected:
         raise RuntimeError(f"PocketOption: no OHLC captured within deadline ({PO_SCRAPE_DEADLINE}s). Last error: {last_err}")
 
-    # prefer the last and longest df
     best = max(collected, key=lambda d: len(d))
     best = best.dropna()
     best = best[~best.index.duplicated(keep="last")]
