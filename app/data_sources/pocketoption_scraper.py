@@ -5,9 +5,9 @@ from typing import List, Literal, Optional
 import pandas as pd
 
 from ..config import (
-    PO_ENABLE_SCRAPE, PO_PROXY, PO_PROXY_FIRST,
-    PO_NAV_TIMEOUT_MS, PO_IDLE_TIMEOUT_MS, PO_WAIT_EXTRA_MS, PO_SCRAPE_DEADLINE,
-    PO_BROWSER_ORDER, LOG_LEVEL
+    PO_ENABLE_SCRAPE, PO_PROXY, PO_PROXY_FIRST, PO_NAV_TIMEOUT_MS,
+    PO_IDLE_TIMEOUT_MS, PO_WAIT_EXTRA_MS, PO_SCRAPE_DEADLINE,
+    PO_BROWSER_ORDER, PO_ENTRY_URL, LOG_LEVEL
 )
 from ..utils.user_agents import UAS
 from ..utils.logging import setup
@@ -26,57 +26,59 @@ def _tf_tokens(tf: str) -> List[str]:
     return _TF_MAP.get(tf.lower(), _TF_MAP["15m"])
 
 def _proxy_dict() -> Optional[dict]:
-    if PO_PROXY and (PO_PROXY_FIRST or os.environ.get("PO_SCRAPE_PROXY_FIRST","1") == "1"):
+    if PO_PROXY and (PO_PROXY_FIRST or os.environ.get("PO_SCRAPE_PROXY_FIRST", "1") == "1"):
         return {"server": PO_PROXY}
     return None
 
 def _looks_like_ohlc(data) -> Optional[pd.DataFrame]:
     try:
-        # {t,o,h,l,c}
-        if isinstance(data, dict) and all(k in data for k in ("t","o","h","l","c")):
-            t,o,h,l,c = data["t"], data["o"], data["h"], data["l"], data["c"]
-            if all(isinstance(x, list) for x in (t,o,h,l,c)) and len(t) > 20:
-                df = pd.DataFrame({"Date": pd.to_datetime(t, unit="s"), "Open": o, "High": h, "Low": l, "Close": c})
+        if isinstance(data, dict) and all(k in data for k in ("t", "o", "h", "l", "c")):
+            t, o, h, l, c = data["t"], data["o"], data["h"], data["l"], data["c"]
+            if all(isinstance(x, list) for x in (t, o, h, l, c)) and len(t) > 20:
+                df = pd.DataFrame({
+                    "Date": pd.to_datetime(t, unit="s"),
+                    "Open": o, "High": h, "Low": l, "Close": c
+                })
                 return df.set_index("Date").sort_index()
 
-        # {"candles":[{t,o,h,l,c},...]}
-        if isinstance(data, dict) and isinstance(data.get("candles"), list) and len(data["candles"]) > 20:
+        if isinstance(data, dict) and isinstance(data.get("candles"), list):
             rows = data["candles"]
-            if all(all(k in r for k in ("t","o","h","l","c")) for r in rows):
-                df = pd.DataFrame([{"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]} for r in rows])
+            if len(rows) > 20 and all(all(k in r for k in ("t", "o", "h", "l", "c")) for r in rows):
+                df = pd.DataFrame([
+                    {"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]}
+                    for r in rows
+                ])
                 return df.set_index("Date").sort_index()
 
-        # [{time/open/high/low/close}...] или короткие ключи
         if isinstance(data, list) and len(data) > 20 and isinstance(data[0], dict):
             ks = set(data[0].keys())
-            if {"time","open","high","low","close"} <= ks:
-                df = pd.DataFrame([{"Date": pd.to_datetime(r["time"], unit="s"), "Open": r["open"], "High": r["high"], "Low": r["low"], "Close": r["close"]} for r in data])
+            if {"time", "open", "high", "low", "close"} <= ks:
+                df = pd.DataFrame([
+                    {"Date": pd.to_datetime(r["time"], unit="s"), "Open": r["open"], "High": r["high"], "Low": r["low"], "Close": r["close"]}
+                    for r in data
+                ])
                 return df.set_index("Date").sort_index()
-            if {"t","o","h","l","c"} <= ks:
-                df = pd.DataFrame([{"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]} for r in data])
+            if {"t", "o", "h", "l", "c"} <= ks:
+                df = pd.DataFrame([
+                    {"Date": pd.to_datetime(r["t"], unit="s"), "Open": r["o"], "High": r["h"], "Low": r["l"], "Close": r["c"]}
+                    for r in data
+                ])
                 return df.set_index("Date").sort_index()
     except Exception as e:
         logger.debug(f"parse payload err: {e}")
     return None
 
-def _url_hint_ok(url: str) -> bool:
-    u = url.lower()
-    # расслабляем фильтр: берём всё «похожее» на фид
-    needles = ["chart","history","candles","ohlc","bars","series","kline","timeseries","feed","marketdata","graphql","api"]
-    return any(n in u for n in needles)
-
 async def _dismiss_popups(page):
-    import re as _re
     texts = [
         "Accept", "I agree", "Agree", "Allow all", "OK", "Got it",
         "Принять", "Согласен", "Хорошо", "Понятно", "Разрешить все",
     ]
+    import re as _re
     for t in texts:
         try:
             btn = page.get_by_role("button", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
             if btn and await btn.count() > 0:
-                await btn.click(timeout=800)
-                await asyncio.sleep(0.1)
+                await btn.click(timeout=800); await asyncio.sleep(0.1)
                 logger.debug(f"Popup dismissed by button: {t}")
                 break
         except Exception:
@@ -85,8 +87,7 @@ async def _dismiss_popups(page):
         try:
             lnk = page.get_by_role("link", name=_re.compile(rf"\b{_re.escape(t)}\b", _re.I)).first
             if lnk and await lnk.count() > 0:
-                await lnk.click(timeout=800)
-                await asyncio.sleep(0.1)
+                await lnk.click(timeout=800); await asyncio.sleep(0.1)
                 logger.debug(f"Popup dismissed by link: {t}")
                 break
         except Exception:
@@ -106,7 +107,6 @@ async def _activate_symbol(page, symbol: str, otc: bool):
                 return True
         except Exception:
             pass
-    # Fallback: поиск
     try:
         import re as _re
         box = page.get_by_placeholder(_re.compile("search", _re.I)).first
@@ -134,19 +134,19 @@ async def _set_timeframe(page, timeframe: str):
                 return True
         except Exception:
             pass
-    # Меню "Interval/Timeframe"
-    try:
-        btn = page.get_by_role("button", name=_re.compile("interval|timeframe", _re.I)).first
-        if btn:
-            await btn.click(timeout=800); await asyncio.sleep(0.1)
-            opt = page.get_by_text(_re.compile(rf"\b{_re.escape(tf)}\b", _re.I)).first
-            if opt:
-                await opt.click(timeout=800); await asyncio.sleep(0.2)
-                logger.debug(f"Selected timeframe from menu: {timeframe}")
-                return True
-    except Exception:
-        pass
     return False
+
+def _try_json(s: str):
+    try:
+        return json.loads(s)
+    except Exception:
+        m = re.search(r"(\{.*\}|\[.*\])", s, flags=re.S)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+    return None
 
 async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","5m","15m","1h"]="15m", otc: bool=False) -> pd.DataFrame:
     if not PO_ENABLE_SCRAPE:
@@ -154,72 +154,20 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
 
     from playwright.async_api import async_playwright
 
-    tf_tokens = _tf_tokens(timeframe)
+    ua = random.choice(UAS)
     collected: List[pd.DataFrame] = []
     collected_ws: List[pd.DataFrame] = []
-    seen = set()
-
-    async def handle_response(resp):
-        url = resp.url
-        if url in seen: return
-        seen.add(url)
-        if not _url_hint_ok(url):  # расслаблено
-            return
-        try:
-            txt = await resp.text()
-        except Exception:
-            try:
-                b = await resp.body()
-                txt = b.decode("utf-8","ignore")
-            except Exception:
-                return
-        if not txt: return
-        try:
-            data = json.loads(txt)
-        except Exception:
-            m = re.search(r"(\{.*\}|\[.*\])", txt, flags=re.S)
-            if not m: return
-            try:
-                data = json.loads(m.group(1))
-            except Exception:
-                return
-        df = _looks_like_ohlc(data)
-        if df is not None:
-            collected.append(df)
-            logger.debug(f"Captured {len(df)} bars from {url}")
-
-    async def on_ws_frame(msg: str):
-        try:
-            m = re.search(r"(\{.*\}|\[.*\])", msg, flags=re.S)
-            if not m: return
-            data = json.loads(m.group(1))
-            df = _looks_like_ohlc(data)
-            if df is not None:
-                collected_ws.append(df)
-                logger.debug(f"Captured {len(df)} bars from WS frame")
-        except Exception:
-            return
-
     deadline = time.time() + PO_SCRAPE_DEADLINE
-    entry_urls = [
-        "https://pocketoption.com/en/trading/",
-        "https://www.pocketoption.com/en/trading/",
-        "https://pocketoption.com/trading/",
-        "https://www.pocketoption.com/trading/",
-        "https://pocketoption.com/",
-        "https://www.pocketoption.com/",
-    ]
-    ua = random.choice(UAS)
+    entry_url = PO_ENTRY_URL or "https://pocketoption.com/ru/cabinet/try-demo/"
 
     async with async_playwright() as p:
-        last_err = None
         for brand in [x.strip() for x in PO_BROWSER_ORDER.split(",") if x.strip()]:
-            browser = None; ctx=None; page=None
+            browser = ctx = page = None
             try:
                 if brand == "firefox":
                     browser = await p.firefox.launch(headless=True)
                 elif brand == "chromium":
-                    browser = await p.chromium.launch(headless=True, args=["--disable-dev-shm-usage","--no-sandbox"])
+                    browser = await p.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--no-sandbox"])
                 elif brand == "webkit":
                     browser = await p.webkit.launch(headless=True)
                 else:
@@ -232,68 +180,61 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["15s","30s","1m","
                     "timezone_id": "Europe/London",
                 }
                 prox = _proxy_dict()
-                if prox: ctx_kwargs["proxy"] = prox
+                if prox:
+                    ctx_kwargs["proxy"] = prox
 
-                ctx = await browser.new_context(**{**ctx_kwargs, "accept_downloads": True, "ignore_https_errors": True})
+                ctx = await browser.new_context(**ctx_kwargs)
                 await ctx.add_init_script("""
-Object.defineProperty(navigator, "webdriver", {get: () => undefined});
-window.chrome = { runtime: {} };
-Object.defineProperty(navigator, "languages", {get: () => ["en-US","en"]});
-Object.defineProperty(navigator, "platform", {get: () => "Win32"});
-Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
+window.__po_frames__ = [];
+(function(){
+  const OrigWS = window.WebSocket;
+  window.WebSocket = function(url, prot){
+    const ws = prot ? new OrigWS(url, prot) : new OrigWS(url);
+    ws.addEventListener("message", function(ev){
+      try {
+        const push = s => { try { window.__po_frames__.push({t: Date.now(), data: s}); } catch(e){} };
+        if (typeof ev.data === "string") push(ev.data);
+        else if (ev.data instanceof Blob){ const r=new FileReader(); r.onload=()=>push(r.result); r.readAsText(ev.data); }
+        else if (ev.data instanceof ArrayBuffer){ try{ push(new TextDecoder().decode(ev.data)); }catch(e){} }
+      } catch(e){}
+    });
+    return ws;
+  };
+  window.WebSocket.prototype = OrigWS.prototype;
+})();
                 """)
 
                 page = await ctx.new_page()
                 page.set_default_navigation_timeout(PO_NAV_TIMEOUT_MS)
                 page.set_default_timeout(max(PO_IDLE_TIMEOUT_MS, PO_NAV_TIMEOUT_MS))
 
-                # подписки
-                page.on("response", lambda r: asyncio.create_task(handle_response(r)))
-                page.on("websocket", lambda ws: ws.on("framereceived", lambda m: asyncio.create_task(on_ws_frame(m))))
+                await page.goto(entry_url, wait_until="commit")
+                await asyncio.sleep(PO_WAIT_EXTRA_MS / 1000.0)
 
-                for url in entry_urls:
-                    try:
-                        try:
-                            await page.goto(url, wait_until="commit")
-                        except Exception as e:
-                            logger.warning(f"goto(commit) warning on {url}: {e}")
-                        try:
-                            await page.wait_for_load_state("domcontentloaded", timeout=PO_NAV_TIMEOUT_MS)
-                        except Exception as e:
-                            logger.warning(f'wait_for_load_state("domcontentloaded") warning on {url}: {e}')
+                await _dismiss_popups(page)
+                await _activate_symbol(page, symbol, otc)
+                await _set_timeframe(page, timeframe)
 
-                        await asyncio.sleep(PO_WAIT_EXTRA_MS/1000.0)
-                        await _dismiss_popups(page)
-                        await _activate_symbol(page, symbol, otc)
-                        await _set_timeframe(page, timeframe)
+                inner_deadline = min(deadline, time.time() + 10)
+                while time.time() < inner_deadline and not (collected or collected_ws):
+                    frames = await page.evaluate("(() => { const a = window.__po_frames__ || []; window.__po_frames__ = []; return a; })()")
+                    for fr in frames:
+                        data = _try_json(fr.get("data", ""))
+                        df = _looks_like_ohlc(data)
+                        if df is not None:
+                            collected_ws.append(df)
+                            logger.debug(f"Captured {len(df)} bars from WS[hook]")
+                    await asyncio.sleep(0.25)
 
-                        inner_deadline = min(deadline, time.time() + 15)
-                        while time.time() < inner_deadline and not (collected or collected_ws):
-                            await asyncio.sleep(0.25)
+                await page.close()
+                await ctx.close()
+                await browser.close()
 
-                        if collected or collected_ws:
-                            break
-                    except Exception as e:
-                        last_err = e
-                        continue
-
-                if collected or collected_ws:
-                    with contextlib.suppress(Exception):
-                        await page.close()
-                    with contextlib.suppress(Exception):
-                        await ctx.close()
-                    with contextlib.suppress(Exception):
-                        await browser.close()
+                if collected_ws:
                     break
-                else:
-                    with contextlib.suppress(Exception):
-                        await page.close()
-                    with contextlib.suppress(Exception):
-                        await ctx.close()
-                    with contextlib.suppress(Exception):
-                        await browser.close()
+
             except Exception as e:
-                last_err = e
+                logger.warning(f"Browser loop error: {e}")
                 with contextlib.suppress(Exception):
                     if page: await page.close()
                 with contextlib.suppress(Exception):
@@ -303,10 +244,9 @@ Object.defineProperty(navigator, "plugins", {get: () => [1,2,3]});
 
     all_sets = collected + collected_ws
     if not all_sets:
-        raise RuntimeError(f"PocketOption: no OHLC captured within deadline ({PO_SCRAPE_DEADLINE}s). Last error: {last_err}")
+        raise RuntimeError(f"PocketOption: no OHLC captured within deadline ({PO_SCRAPE_DEADLINE}s)")
 
-    best = max(all_sets, key=lambda d: len(d))
-    best = best.dropna()
+    best = max(all_sets, key=lambda d: len(d)).dropna()
     best = best[~best.index.duplicated(keep="last")]
     if len(best) < 30:
         logger.warning(f"Captured only {len(best)} candles; signals may be unstable")
