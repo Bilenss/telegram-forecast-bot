@@ -2,6 +2,7 @@ from __future__ import annotations
 import os, json, time, re, random, asyncio
 from typing import Literal, List, Optional
 import pandas as pd
+import contextlib
 
 from ..config import (
     PO_ENABLE_SCRAPE, PO_PROXY, PO_PROXY_FIRST,
@@ -66,6 +67,7 @@ def _url_hint_ok(url: str, symbol: str, tf_tokens: List[str]) -> bool:
     return likely and (any_sym or any_tf)
 
 async def _activate_symbol(page, symbol: str, otc: bool):
+    logger.debug(f"Try activate symbol: {symbol} (otc={otc})")
     variants = [symbol, symbol.replace("/", ""), symbol.replace("/", " / "), symbol.replace("/", "-")]
     if otc:
         variants += [f"{symbol} OTC", f"{symbol.replace('/', '')} OTC"]
@@ -96,6 +98,7 @@ async def _activate_symbol(page, symbol: str, otc: bool):
     return False
 
 async def _set_timeframe(page, timeframe: str):
+    logger.debug(f"Try set timeframe: {timeframe}")
     tf_label = timeframe.lower()
     variants = [tf_label, tf_label.upper(), tf_label.replace("h","H")]
     import re as _re
