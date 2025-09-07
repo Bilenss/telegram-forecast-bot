@@ -11,12 +11,12 @@ from .config import (
 )
 from .states import ForecastStates as ST
 from .keyboards import lang_keyboard, mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
-from .cache import TTLCache  # Исправлен импорт
-from .logging import setup  # Исправлен импорт
+from .utils.cache import TTLCache
+from .utils.logging import setup
 from .pairs import all_pairs
-from .indicators import compute_indicators  # Исправлен импорт
-from .decision import signal_from_indicators, simple_ta_signal  # Исправлен импорт
-from .pocketoption_scraper import fetch_po_ohlc_async  # Исправлен импорт
+from .analysis.indicators import compute_indicators
+from .analysis.decision import signal_from_indicators, simple_ta_signal
+from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
 
 logger = setup(LOG_LEVEL)
 
@@ -116,16 +116,25 @@ async def set_timeframe(m: types.Message, state: FSMContext):
 
     pairs = all_pairs(cat)
     pair_info = pairs.get(pair_human)
+    
+    if not pair_info:
+        await m.answer(f"Error: Invalid pair {pair_human}")
+        await state.finish()
+        return
+
     try:
+        logger.info(f"Loading OHLC data for {pair_human} ({pair_info}) on {tf}")
         df = await load_ohlc(pair_info, timeframe=tf, category=cat)
+        logger.info(f"Got {len(df)} bars for analysis")
     except Exception as e:
         logger.error(f"Error loading OHLC data: {e}")
-        await m.answer(tr(lang, "no_data").format(pair_human, tf) + f"\n{str(e)}")
+        await m.answer(tr(lang, "no_data").format(pair_human, tf) + f"\nError: {str(e)}")
         await state.finish()
         return
 
     try:
         if mode == "ind":
+            logger.info("Computing indicators...")
             ind = compute_indicators(df)
             action, notes = signal_from_indicators(df, ind)
             msg = [tr(lang, "result").format(action)]
@@ -136,25 +145,28 @@ async def set_timeframe(m: types.Message, state: FSMContext):
             if notes:
                 msg.append(tr(lang, "notes").format("; ".join(notes)))
         else:
+            logger.info("Computing TA signal...")
             action, notes = simple_ta_signal(df)
             msg = [tr(lang, "result").format(action)]
             if notes:
                 msg.append(tr(lang, "notes").format("; ".join(notes)))
 
         await m.answer("\n".join(msg), parse_mode="HTML")
+        logger.info(f"Sent forecast: {action}")
     except Exception as e:
         logger.error(f"Error in analysis: {e}")
-        await m.answer(f"Ошибка анализа: {str(e)}")
+        await m.answer(f"Analysis error: {str(e)}")
 
     if ENABLE_CHARTS:
         try:
-            from .charts import plot_candles
+            from .utils.charts import plot_candles
             import os, tempfile
             with tempfile.TemporaryDirectory() as tmpd:
                 p = os.path.join(tmpd, "chart.png")
                 out = plot_candles(df, p)
-                if out:
+                if out and os.path.exists(out):
                     await m.answer_photo(types.InputFile(out))
+                    logger.info("Chart sent successfully")
         except Exception as e:
             logger.error(f"Chart error: {e}")
 
@@ -164,22 +176,30 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
     
-    # Проверяем правильность pair_info
     if not pair_info or 'po' not in pair_info:
         raise RuntimeError(f"Invalid pair info: {pair_info}")
     
     otc = (category == "otc")
+    logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
     return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=otc)
 
 def main():
+    print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
+    print(f"PO_ENABLE_SCRAPE: {PO_ENABLE_SCRAPE}")
+    print(f"DEFAULT_LANG: {DEFAULT_LANG}")
+    print(f"LOG_LEVEL: {LOG_LEVEL}")
+    
     if not TELEGRAM_TOKEN:
         raise SystemExit("TELEGRAM_TOKEN env var is required")
     
     logger.info("Starting Telegram bot...")
-    logger.info(f"PO_ENABLE_SCRAPE: {PO_ENABLE_SCRAPE}")
-    logger.info(f"DEFAULT_LANG: {DEFAULT_LANG}")
+    logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG={DEFAULT_LANG}")
     
-    executor.start_polling(dp, skip_updates=True)
+    try:
+        executor.start_polling(dp, skip_updates=True)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
