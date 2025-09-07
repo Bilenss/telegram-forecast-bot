@@ -33,8 +33,8 @@ LANG = {
         "tf": "Выберите таймфрейм:",
         "processing": "Анализирую данные...",
         "no_data": "Не удалось получить данные для {} на таймфрейме {}",
-        "result": "👉 Прогноз на {}: <b>{}</b>",
-        "ind": "📈 Индикаторы: RSI={:.1f}; EMA_fast={:.5f}; EMA_slow={:.5f}; MACD={:.5f}; MACD_signal={:.5f}",
+        "result": "👉 Прогноз на {}: {}",
+        "ind": "📈 Индикаторы:\nRSI: {:.1f}\nEMA fast: {:.5f}\nEMA slow: {:.5f}\nMACD: {:.5f}\nMACD signal: {:.5f}",
         "ta_result": "📊 Технический анализ: {}",
         "notes": "ℹ️ {}",
         "chart": "График: {}"
@@ -47,8 +47,8 @@ LANG = {
         "tf": "Choose timeframe:",
         "processing": "Analyzing data...",
         "no_data": "Failed to load data for {} at timeframe {}",
-        "result": "👉 Forecast for {}: <b>{}</b>",
-        "ind": "📈 Indicators: RSI={:.1f}; EMA_fast={:.5f}; EMA_slow={:.5f}; MACD={:.5f}; MACD_signal={:.5f}",
+        "result": "👉 Forecast for {}: {}",
+        "ind": "📈 Indicators:\nRSI: {:.1f}\nEMA fast: {:.5f}\nEMA slow: {:.5f}\nMACD: {:.5f}\nMACD signal: {:.5f}",
         "ta_result": "📊 Technical Analysis: {}",
         "notes": "ℹ️ {}",
         "chart": "Chart: {}"
@@ -57,6 +57,12 @@ LANG = {
 
 def tr(lang, key):
     return LANG.get(lang, LANG["en"])[key]
+
+def escape_html(text):
+    """Экранирование HTML символов для Telegram"""
+    if not isinstance(text, str):
+        text = str(text)
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
@@ -145,27 +151,35 @@ async def set_timeframe(m: types.Message, state: FSMContext):
             ind = compute_indicators(df)
             action, notes = signal_from_indicators(df, ind)
             
-            # Форматированный ответ для индикаторов
-            msg_parts = [
-                tr(lang, "result").format(tf.upper(), action),
-                tr(lang, "ind").format(
-                    ind["RSI"], ind["EMA_fast"], ind["EMA_slow"], 
-                    ind["MACD"], ind["MACD_signal"]
-                )
-            ]
+            # Безопасное форматирование для индикаторов (без HTML)
+            result_text = tr(lang, "result").format(tf.upper(), action)
+            ind_text = tr(lang, "ind").format(
+                ind["RSI"], ind["EMA_fast"], ind["EMA_slow"], 
+                ind["MACD"], ind["MACD_signal"]
+            )
+            
+            msg_parts = [result_text, ind_text]
+            
             if notes:
-                msg_parts.append(tr(lang, "notes").format("; ".join(notes)))
+                notes_text = tr(lang, "notes").format("; ".join(notes))
+                msg_parts.append(notes_text)
+                
+            # Отправляем без HTML форматирования
+            await processing_msg.edit_text("\n\n".join(msg_parts))
+            
         else:
             logger.info("Computing TA signal...")
             action, notes = simple_ta_signal(df)
             
             # Форматированный ответ для ТА
-            msg_parts = [
-                tr(lang, "result").format(tf.upper(), action),
-                tr(lang, "ta_result").format("; ".join(notes) if notes else "Базовый анализ завершен")
-            ]
+            result_text = tr(lang, "result").format(tf.upper(), action)
+            ta_text = tr(lang, "ta_result").format("; ".join(notes) if notes else "Basic analysis completed")
+            
+            msg_parts = [result_text, ta_text]
+            
+            # Отправляем без HTML форматирования
+            await processing_msg.edit_text("\n\n".join(msg_parts))
 
-        await processing_msg.edit_text("\n".join(msg_parts), parse_mode="HTML")
         logger.info(f"Sent forecast: {action} for {tf}")
         
     except Exception as e:
