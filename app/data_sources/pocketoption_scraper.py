@@ -95,7 +95,7 @@ async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataF
     
     # Создаем временной индекс
     freq_map = {
-        '30s': '30S', '1m': '1min', '2m': '2min', '3m': '3min',
+        '30s': '30s', '1m': '1min', '2m': '2min', '3m': '3min',
         '5m': '5min', '10m': '10min', '15m': '15min', 
         '30m': '30min', '1h': '1H'
     }
