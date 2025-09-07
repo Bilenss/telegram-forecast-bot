@@ -24,52 +24,43 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
-LANG = {
-    "ru": {
-        "hi": "Привет! Выберите режим анализа:",
-        "mode": "Выберите режим анализа:",
-        "category": "Выберите категорию актива:",
-        "pair": "Выберите валютную пару:",
-        "tf": "Выберите таймфрейм:",
-        "processing": "Анализирую данные...",
-        "no_data": "Не удалось получить данные для {} на таймфрейме {}",
-        "result": "👉 Прогноз на {}: {}",
-        "ind": "📈 Индикаторы:\nRSI: {:.1f}\nEMA fast: {:.5f}\nEMA slow: {:.5f}\nMACD: {:.5f}\nMACD signal: {:.5f}",
-        "ta_result": "📊 Технический анализ: {}",
-        "notes": "ℹ️ {}",
-        "chart": "График: {}"
-    },
-    "en": {
-        "hi": "Hello! Choose analysis mode:",
-        "mode": "Choose analysis mode:",
-        "category": "Choose asset category:",
-        "pair": "Choose pair:",
-        "tf": "Choose timeframe:",
-        "processing": "Analyzing data...",
-        "no_data": "Failed to load data for {} at timeframe {}",
-        "result": "👉 Forecast for {}: {}",
-        "ind": "📈 Indicators:\nRSI: {:.1f}\nEMA fast: {:.5f}\nEMA slow: {:.5f}\nMACD: {:.5f}\nMACD signal: {:.5f}",
-        "ta_result": "📊 Technical Analysis: {}",
-        "notes": "ℹ️ {}",
-        "chart": "Chart: {}"
-    }
-}
-
-def tr(lang, key):
-    return LANG.get(lang, LANG["en"])[key]
-
-def escape_html(text):
-    """Экранирование HTML символов для Telegram"""
-    if not isinstance(text, str):
-        text = str(text)
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
+    """Безопасное форматирование сообщения без HTML"""
+    
+    tf_upper = timeframe.upper()
+    
+    if mode == "ind":
+        # Для индикаторов
+        message_parts = [
+            f"👉 Forecast for {tf_upper}: {action}",
+            "",
+            "📈 Indicators:",
+            f"RSI: {data['RSI']:.1f}",
+            f"EMA fast: {data['EMA_fast']:.5f}",
+            f"EMA slow: {data['EMA_slow']:.5f}", 
+            f"MACD: {data['MACD']:.5f}",
+            f"MACD signal: {data['MACD_signal']:.5f}"
+        ]
+    else:
+        # Для технического анализа
+        message_parts = [
+            f"👉 Forecast for {tf_upper}: {action}",
+            "",
+            f"📊 Technical Analysis: {'; '.join(notes) if notes else 'Basic analysis completed'}"
+        ]
+    
+    if notes and mode == "ind":
+        message_parts.extend(["", f"ℹ️ {'; '.join(notes)}"])
+    
+    return "\n".join(message_parts)
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
     await state.finish()
-    # Сразу используем язык по умолчанию без выбора
     await state.update_data(lang=DEFAULT_LANG)
-    await m.answer(tr(DEFAULT_LANG, "hi"), reply_markup=mode_keyboard(DEFAULT_LANG))
+    
+    welcome_text = "Hello! Choose analysis mode:" if DEFAULT_LANG == "en" else "Привет! Выберите режим анализа:"
+    await m.answer(welcome_text, reply_markup=mode_keyboard(DEFAULT_LANG))
     await ST.Mode.set()
 
 @dp.message_handler(state=ST.Mode)
@@ -78,7 +69,9 @@ async def set_mode(m: types.Message, state: FSMContext):
     lang = data.get("lang", DEFAULT_LANG)
     mode = "ta" if "Тех" in m.text or "Technical" in m.text else "ind"
     await state.update_data(mode=mode)
-    await m.answer(tr(lang, "category"), reply_markup=category_keyboard(lang))
+    
+    category_text = "Choose asset category:" if lang == "en" else "Выберите категорию актива:"
+    await m.answer(category_text, reply_markup=category_keyboard(lang))
     await ST.Category.set()
 
 @dp.message_handler(state=ST.Category)
@@ -87,8 +80,10 @@ async def set_category(m: types.Message, state: FSMContext):
     lang = data.get("lang", DEFAULT_LANG)
     cat = "fin" if "FIN" in m.text else "otc"
     await state.update_data(category=cat)
+    
     pairs = all_pairs(cat)
-    await m.answer(tr(lang, "pair"), reply_markup=pairs_keyboard(pairs))
+    pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
+    await m.answer(pair_text, reply_markup=pairs_keyboard(pairs))
     await ST.Pair.set()
 
 @dp.message_handler(state=ST.Pair)
@@ -97,11 +92,15 @@ async def set_pair(m: types.Message, state: FSMContext):
     lang = data.get("lang", DEFAULT_LANG)
     cat = data.get("category", "fin")
     pairs = all_pairs(cat)
+    
     if m.text not in pairs:
-        await m.answer(tr(lang, "pair"), reply_markup=pairs_keyboard(pairs))
+        pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
+        await m.answer(pair_text, reply_markup=pairs_keyboard(pairs))
         return
+        
     await state.update_data(pair=m.text)
-    await m.answer(tr(lang, "tf"), reply_markup=timeframe_keyboard(lang, po_available=True))
+    tf_text = "Choose timeframe:" if lang == "en" else "Выберите таймфрейм:"
+    await m.answer(tf_text, reply_markup=timeframe_keyboard(lang, po_available=True))
     await ST.Timeframe.set()
 
 @dp.message_handler(state=ST.Timeframe)
@@ -114,7 +113,8 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     tf = m.text.strip().lower()
 
     # Показать сообщение об анализе
-    processing_msg = await m.answer(tr(lang, "processing"))
+    processing_text = "Analyzing data..." if lang == "en" else "Анализирую данные..."
+    processing_msg = await m.answer(processing_text)
 
     pairs = all_pairs(cat)
     pair_info = pairs.get(pair_human)
@@ -141,7 +141,8 @@ async def set_timeframe(m: types.Message, state: FSMContext):
         logger.info(f"Got {len(df)} bars for analysis")
     except Exception as e:
         logger.error(f"Error loading OHLC data: {e}")
-        await processing_msg.edit_text(tr(lang, "no_data").format(pair_human, tf) + f"\nError: {str(e)}")
+        error_text = f"Failed to load data for {pair_human} at timeframe {tf}\nError: {str(e)}"
+        await processing_msg.edit_text(error_text)
         await state.finish()
         return
 
@@ -151,35 +152,18 @@ async def set_timeframe(m: types.Message, state: FSMContext):
             ind = compute_indicators(df)
             action, notes = signal_from_indicators(df, ind)
             
-            # Безопасное форматирование для индикаторов (без HTML)
-            result_text = tr(lang, "result").format(tf.upper(), action)
-            ind_text = tr(lang, "ind").format(
-                ind["RSI"], ind["EMA_fast"], ind["EMA_slow"], 
-                ind["MACD"], ind["MACD_signal"]
-            )
-            
-            msg_parts = [result_text, ind_text]
-            
-            if notes:
-                notes_text = tr(lang, "notes").format("; ".join(notes))
-                msg_parts.append(notes_text)
-                
-            # Отправляем без HTML форматирования
-            await processing_msg.edit_text("\n\n".join(msg_parts))
+            # Используем безопасную функцию форматирования
+            result_message = format_forecast_message(mode, tf, action, ind, notes, lang)
             
         else:
             logger.info("Computing TA signal...")
             action, notes = simple_ta_signal(df)
             
-            # Форматированный ответ для ТА
-            result_text = tr(lang, "result").format(tf.upper(), action)
-            ta_text = tr(lang, "ta_result").format("; ".join(notes) if notes else "Basic analysis completed")
-            
-            msg_parts = [result_text, ta_text]
-            
-            # Отправляем без HTML форматирования
-            await processing_msg.edit_text("\n\n".join(msg_parts))
+            # Используем безопасную функцию форматирования  
+            result_message = format_forecast_message(mode, tf, action, {}, notes, lang)
 
+        # Отправляем сообщение БЕЗ parse_mode
+        await processing_msg.edit_text(result_message)
         logger.info(f"Sent forecast: {action} for {tf}")
         
     except Exception as e:
