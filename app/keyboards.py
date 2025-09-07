@@ -1,9 +1,5 @@
+# app/keyboards.py
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-
-def lang_keyboard():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("RU"), KeyboardButton("EN"))
-    return kb
 
 def mode_keyboard(lang):
     d = {"ru": ["📊 Технический анализ", "📈 Индикаторы"],
@@ -28,8 +24,18 @@ def pairs_keyboard(pairs):
     return kb
 
 def timeframe_keyboard(lang, po_available=True):
-    lbl = ["15s", "30s", "1m", "5m", "15m", "1h"] if po_available else ["1m", "5m", "15m", "1h"]
+    """Обновленная клавиатура с новыми таймфреймами"""
+    # Новые таймфреймы как требовалось
+    timeframes = ["30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h"]
+    
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    for it in lbl:
-        kb.add(KeyboardButton(it))
+    
+    # Добавляем кнопки по 3 в ряд
+    for i in range(0, len(timeframes), 3):
+        row_buttons = []
+        for j in range(3):
+            if i + j < len(timeframes):
+                row_buttons.append(KeyboardButton(timeframes[i + j]))
+        kb.row(*row_buttons)
+    
     return kb
