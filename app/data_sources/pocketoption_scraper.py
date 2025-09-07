@@ -1,5 +1,4 @@
 # app/data_sources/pocketoption_scraper.py
-# Исправленные импорты
 from __future__ import annotations
 import asyncio, contextlib, json, os, random, re, time
 from typing import List, Literal, Optional
@@ -15,9 +14,6 @@ from ..utils.user_agents import UAS
 from ..utils.logging import setup
 
 logger = setup(LOG_LEVEL)
-
-# Остальная часть файла остается без изменений...
-(Ваш существующий код pocketoption_scraper.py)
 
 # ---- Collectors ----
 def _proxy_dict() -> Optional[dict]:
