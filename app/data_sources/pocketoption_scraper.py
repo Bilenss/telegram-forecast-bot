@@ -179,88 +179,281 @@ def attach_collectors(page, context, sink_list):
             pass
     context.on("response", on_resp)
 
-async def _interact_with_page(page, symbol: str, timeframe: str, otc: bool):
-    """Try to interact with PocketOption interface"""
-    logger.debug(f"Interacting with page for {symbol} (otc={otc}, tf={timeframe})")
+async def _interact_with_page_advanced(page, symbol: str, timeframe: str, otc: bool):
+    """Advanced page interaction with more aggressive element detection"""
+    logger.debug(f"Advanced interaction for {symbol} (otc={otc}, tf={timeframe})")
     
     try:
         # Wait for page to stabilize
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
         
-        # Try to find and click asset selector
-        selectors = [
-            '[data-testid="select-asset"]',
-            'button[aria-label*="asset"]',
-            'button:has-text("Assets")',
-            '.asset-selector',
+        # Step 1: Try to find current asset display
+        logger.debug("Looking for current asset display...")
+        asset_selectors = [
+            '[data-testid*="asset"]',
             '[class*="asset"]',
+            '[class*="symbol"]',
+            '[class*="instrument"]',
+            'button[class*="asset"]',
+            'div[class*="asset"]',
+            '.trading-asset',
+            '.current-asset',
+            '[aria-label*="asset"]',
+            '[aria-label*="symbol"]'
         ]
         
-        for selector in selectors:
+        clicked_asset = False
+        for selector in asset_selectors:
             try:
-                element = page.locator(selector).first
-                if await element.count() > 0:
-                    await element.click(timeout=2000)
-                    await asyncio.sleep(1)
-                    logger.debug(f"Clicked asset selector: {selector}")
-                    break
-            except Exception:
-                continue
-        
-        # Try to find the specific symbol
-        symbol_variants = [
-            symbol,
-            symbol.replace('/', ''),
-            f"{symbol} OTC" if otc else symbol,
-            symbol.replace('/', ' / ')
-        ]
-        
-        for variant in symbol_variants:
-            try:
-                # Look for exact text match
-                element = page.get_by_text(variant, exact=True).first
-                if await element.count() > 0:
-                    await element.click(timeout=2000)
-                    await asyncio.sleep(1)
-                    logger.debug(f"Selected symbol: {variant}")
-                    break
+                elements = page.locator(selector)
+                count = await elements.count()
+                logger.debug(f"Found {count} elements for selector: {selector}")
                 
-                # Try partial match
-                element = page.locator(f'text="{variant}"').first
-                if await element.count() > 0:
-                    await element.click(timeout=2000)
-                    await asyncio.sleep(1)
-                    logger.debug(f"Selected symbol (partial): {variant}")
+                for i in range(min(count, 3)):  # Check first 3 elements
+                    try:
+                        element = elements.nth(i)
+                        text = await element.inner_text() if await element.count() > 0 else ""
+                        logger.debug(f"Element {i} text: {text}")
+                        
+                        if await element.is_visible():
+                            await element.click(timeout=2000)
+                            await asyncio.sleep(1)
+                            logger.debug(f"Clicked asset element: {selector}[{i}]")
+                            clicked_asset = True
+                            break
+                    except Exception as e:
+                        logger.debug(f"Failed to click {selector}[{i}]: {e}")
+                        continue
+                
+                if clicked_asset:
                     break
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Selector {selector} failed: {e}")
                 continue
         
-        # Try to set timeframe
-        tf_variants = {
-            '15s': ['15s', 'S15', '15 sec'],
-            '30s': ['30s', 'S30', '30 sec'],
-            '1m': ['1m', 'M1', '1 min', '1min'],
-            '5m': ['5m', 'M5', '5 min', '5min'],
-            '15m': ['15m', 'M15', '15 min', '15min'],
-            '1h': ['1h', 'H1', '1 hour', '1hr']
+        # Step 2: Look for asset list/dropdown
+        if clicked_asset or True:  # Always try this step
+            await asyncio.sleep(1)
+            logger.debug("Looking for symbol in lists...")
+            
+            # Get all text elements that might contain symbols
+            all_text_elements = await page.locator('*').all_inner_texts()
+            symbol_variants = [
+                symbol,
+                symbol.replace('/', ''),
+                symbol.replace('/', ' / '),
+                symbol.replace('/', '-'),
+                f"{symbol} OTC" if otc else symbol,
+                f"{symbol.replace('/', '')} OTC" if otc else symbol.replace('/', ''),
+            ]
+            
+            logger.debug(f"Looking for variants: {symbol_variants}")
+            
+            # Find elements containing our symbol
+            for variant in symbol_variants:
+                try:
+                    # Try exact text match
+                    elements = page.get_by_text(variant, exact=True)
+                    if await elements.count() > 0:
+                        await elements.first.click(timeout=2000)
+                        await asyncio.sleep(1)
+                        logger.debug(f"Selected symbol exact: {variant}")
+                        break
+                    
+                    # Try contains match
+                    elements = page.locator(f'text*="{variant}"')
+                    if await elements.count() > 0:
+                        await elements.first.click(timeout=2000)
+                        await asyncio.sleep(1)
+                        logger.debug(f"Selected symbol contains: {variant}")
+                        break
+                    
+                    # Try in buttons specifically
+                    elements = page.locator(f'button:has-text("{variant}")')
+                    if await elements.count() > 0:
+                        await elements.first.click(timeout=2000)
+                        await asyncio.sleep(1)
+                        logger.debug(f"Selected symbol button: {variant}")
+                        break
+                        
+                except Exception as e:
+                    logger.debug(f"Failed to select {variant}: {e}")
+                    continue
+        
+        # Step 3: Handle timeframe selection
+        await asyncio.sleep(1)
+        logger.debug(f"Looking for timeframe: {timeframe}")
+        
+        timeframe_variants = {
+            '15s': ['15s', 'S15', '15 sec', '15sec', '00:15'],
+            '30s': ['30s', 'S30', '30 sec', '30sec', '00:30'],
+            '1m': ['1m', 'M1', '1 min', '1min', '01:00'],
+            '5m': ['5m', 'M5', '5 min', '5min', '05:00'],
+            '15m': ['15m', 'M15', '15 min', '15min', '15:00'],
+            '1h': ['1h', 'H1', '1 hour', '1hr', '60m', '60 min']
         }.get(timeframe, [timeframe])
         
-        for tf_variant in tf_variants:
+        # First try to find timeframe selector button
+        tf_selectors = [
+            '[class*="timeframe"]',
+            '[class*="time-frame"]',
+            '[class*="period"]',
+            '[data-testid*="timeframe"]',
+            '[data-testid*="time"]',
+            'button[class*="time"]',
+            '.time-selector',
+            '.period-selector'
+        ]
+        
+        for selector in tf_selectors:
             try:
-                element = page.locator(f'button:has-text("{tf_variant}")').first
-                if await element.count() > 0:
-                    await element.click(timeout=2000)
+                elements = page.locator(selector)
+                count = await elements.count()
+                if count > 0:
+                    await elements.first.click(timeout=2000)
                     await asyncio.sleep(1)
-                    logger.debug(f"Selected timeframe: {tf_variant}")
+                    logger.debug(f"Clicked timeframe selector: {selector}")
                     break
             except Exception:
                 continue
         
-        # Wait a bit more for data to load
+        # Then try to find specific timeframe
+        for tf_variant in timeframe_variants:
+            try:
+                # Try button with exact text
+                elements = page.locator(f'button:has-text("{tf_variant}")')
+                if await elements.count() > 0:
+                    await elements.first.click(timeout=2000)
+                    await asyncio.sleep(1)
+                    logger.debug(f"Selected timeframe button: {tf_variant}")
+                    break
+                
+                # Try any element with text
+                elements = page.get_by_text(tf_variant, exact=True)
+                if await elements.count() > 0:
+                    await elements.first.click(timeout=2000)
+                    await asyncio.sleep(1)
+                    logger.debug(f"Selected timeframe text: {tf_variant}")
+                    break
+                    
+            except Exception as e:
+                logger.debug(f"Failed to select timeframe {tf_variant}: {e}")
+                continue
+        
+        # Step 4: Wait for data to start flowing
+        logger.debug("Waiting for chart data to load...")
+        await asyncio.sleep(5)
+        
+        # Step 5: Try to trigger chart updates by clicking on chart area
+        try:
+            chart_selectors = [
+                '[class*="chart"]',
+                '[class*="trading-view"]',
+                '[class*="tradingview"]',
+                'canvas',
+                '[id*="chart"]',
+                '.chart-container'
+            ]
+            
+            for selector in chart_selectors:
+                try:
+                    element = page.locator(selector).first
+                    if await element.count() > 0 and await element.is_visible():
+                        await element.click(timeout=1000)
+                        logger.debug(f"Clicked chart element: {selector}")
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
         await asyncio.sleep(3)
         
     except Exception as e:
-        logger.warning(f"Page interaction error: {e}")
+        logger.warning(f"Advanced page interaction error: {e}")
+
+# Enhanced data collection with more WebSocket message types
+def attach_collectors_advanced(page, context, sink_list):
+    """Enhanced data collectors for multiple message types"""
+    def on_ws(ws):
+        logger.debug(f"WS opened: {ws.url}")
+        
+        def _on_frame(ev):
+            try:
+                payload = ev.get("payload", "")
+                
+                # Log all WebSocket messages for debugging
+                if len(payload) > 10:  # Ignore ping/pong
+                    logger.debug(f"WS message preview: {payload[:100]}...")
+                
+                # Check for OHLC data
+                bars = _maybe_ohlc(payload)
+                if bars:
+                    logger.info(f"WS: Found {len(bars)} OHLC bars")
+                    sink_list.append(bars)
+                    return
+                
+                # Check for other chart data formats
+                try:
+                    j = json.loads(payload)
+                    
+                    # Format 1: Direct array with price data
+                    if isinstance(j, list) and j and isinstance(j[0], (int, float)):
+                        if len(j) >= 4:  # Might be [time, open, high, low, close]
+                            logger.debug("Found potential price array data")
+                    
+                    # Format 2: Object with chart/candlestick data
+                    if isinstance(j, dict):
+                        for key in j:
+                            if any(word in str(key).lower() for word in ["candle", "bar", "ohlc", "chart", "price"]):
+                                logger.debug(f"Found potential price data in key: {key}")
+                    
+                    # Format 3: Nested structure
+                    if isinstance(j, dict) and "data" in j:
+                        data = j["data"]
+                        if isinstance(data, dict) and any(k in data for k in ["candles", "bars", "ohlc"]):
+                            logger.debug("Found nested price data structure")
+                            
+                except Exception:
+                    pass
+                    
+            except Exception as e:
+                logger.debug(f"WS frame processing error: {e}")
+        
+        ws.on("framereceived", _on_frame)
+        ws.on("framesent", _on_frame)  # Sometimes data comes in sent frames
+    
+    page.on("websocket", on_ws)
+
+    def on_resp(resp):
+        try:
+            url = resp.url.lower()
+            
+            # More aggressive URL filtering
+            if any(word in url for word in [
+                "ohlc", "candle", "bar", "history", "chart", "api", "data",
+                "quote", "price", "market", "trading", "feed", "stream"
+            ]):
+                content_type = resp.headers.get("content-type", "").lower()
+                
+                if "application/json" in content_type:
+                    async def _read():
+                        try:
+                            j = await resp.json()
+                            bars = _maybe_ohlc(json.dumps(j))
+                            if bars:
+                                logger.info(f"HTTP: Found {len(bars)} bars from {url}")
+                                sink_list.append(bars)
+                            else:
+                                logger.debug(f"HTTP: Non-OHLC data from {url}")
+                        except Exception as e:
+                            logger.debug(f"HTTP response processing error: {e}")
+                    
+                    context.loop.create_task(_read())
+        except Exception as e:
+            logger.debug(f"Response handler error: {e}")
+    
+    context.on("response", on_resp)
 
 async def fetch_po_ohlc_real(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
     """Fetch real OHLC data from PocketOption"""
