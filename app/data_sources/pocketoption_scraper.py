@@ -163,7 +163,7 @@ try:
     SCREENSHOT_AVAILABLE = True
     logger.info("Screenshot analyzer loaded successfully")
 except ImportError as e:
-    SCREENSHOT_AVAILABLE = True
+    SCREENSHOT_AVAILABLE = False
     logger.warning(f"Screenshot analyzer not available: {e}")
 
 def _proxy_dict() -> Optional[dict]:
