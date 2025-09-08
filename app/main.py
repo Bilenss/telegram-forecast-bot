@@ -10,14 +10,12 @@ from .config import (
     ENABLE_CHARTS, LOG_LEVEL
 )
 from .states import ForecastStates as ST
-from .keyboards import (
-    mode_keyboard, category_keyboard, pairs_keyboard, 
-    timeframe_keyboard, restart_keyboard, remove_keyboard
-)
+from .keyboards import mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
 from .utils.cache import TTLCache
 from .utils.logging import setup
 from .pairs import all_pairs
-from .analysis.fast_prediction import fast_predictor
+from .analysis.indicators import compute_indicators
+from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
 
 logger = setup(LOG_LEVEL)
@@ -25,6 +23,42 @@ logger = setup(LOG_LEVEL)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
+
+def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
+    """Форматирование сообщения прогноза"""
+    tf_upper = timeframe.upper()
+    
+    if mode == "ind":
+        # Для индикаторов
+        message_parts = [
+            f"🎯 **ПРОГНОЗ на {tf_upper}**",
+            "",
+            f"💡 Рекомендация: **{action}**",
+            "",
+            "📊 **Индикаторы:**",
+            f"• RSI: {data['RSI']:.1f}",
+            f"• EMA быстрая: {data['EMA_fast']:.5f}",
+            f"• EMA медленная: {data['EMA_slow']:.5f}", 
+            f"• MACD: {data['MACD']:.5f}",
+            f"• MACD сигнал: {data['MACD_signal']:.5f}"
+        ]
+    else:
+        # Для технического анализа
+        message_parts = [
+            f"🎯 **ПРОГНОЗ на {tf_upper}**",
+            "",
+            f"💡 Рекомендация: **{action}**",
+            "",
+            f"📊 **Технический анализ:**",
+            f"• {'; '.join(notes) if notes else 'Анализ завершен'}"
+        ]
+    
+    if notes and mode == "ind":
+        message_parts.extend(["", f"ℹ️ {'; '.join(notes)}"])
+    
+    message_parts.extend(["", "⏱ _Анализ выполнен на основе данных PocketOption_"])
+    
+    return "\n".join(message_parts)
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
@@ -66,7 +100,7 @@ async def handle_back(m: types.Message, state: FSMContext):
         # По умолчанию возврат к старту
         await cmd_start(m, state)
 
-@dp.message_handler(lambda m: "🔄" in m.text, state="*")
+@dp.message_handler(lambda m: "🔄" in m.text or "New forecast" in m.text or "Новый прогноз" in m.text, state="*")
 async def handle_restart(m: types.Message, state: FSMContext):
     """Обработка кнопки Новый прогноз"""
     await cmd_start(m, state)
@@ -75,11 +109,6 @@ async def handle_restart(m: types.Message, state: FSMContext):
 async def set_mode(m: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang", DEFAULT_LANG)
-    
-    # Проверяем, не нажата ли кнопка "Назад"
-    if "⬅️" in m.text:
-        await handle_back(m, state)
-        return
     
     mode = "ta" if "Тех" in m.text or "Technical" in m.text else "ind"
     await state.update_data(mode=mode)
@@ -92,11 +121,6 @@ async def set_mode(m: types.Message, state: FSMContext):
 async def set_category(m: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang", DEFAULT_LANG)
-    
-    # Проверяем, не нажата ли кнопка "Назад"
-    if "⬅️" in m.text:
-        await handle_back(m, state)
-        return
     
     cat = "fin" if "FIN" in m.text else "otc"
     await state.update_data(category=cat)
@@ -112,11 +136,6 @@ async def set_pair(m: types.Message, state: FSMContext):
     lang = data.get("lang", DEFAULT_LANG)
     cat = data.get("category", "fin")
     pairs = all_pairs(cat)
-    
-    # Проверяем, не нажата ли кнопка "Назад"
-    if "⬅️" in m.text:
-        await handle_back(m, state)
-        return
     
     if m.text not in pairs:
         pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
@@ -136,67 +155,74 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     cat = data.get("category", "fin")
     pair_human = data.get("pair")
     tf = m.text.strip().lower()
-    
-    # Проверяем, не нажата ли кнопка "Назад"
-    if "⬅️" in m.text:
-        await handle_back(m, state)
-        return
 
-    # ВАЖНО: Убираем клавиатуру сразу после выбора
-    processing_text = "⏳ Analyzing PocketOption data..." if lang == "en" else "⏳ Анализирую данные PocketOption..."
-    processing_msg = await m.answer(processing_text, reply_markup=remove_keyboard())
+    # Создаем клавиатуру с кнопкой "Новый прогноз"
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+    
+    restart_kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    restart_text = "🔄 Новый прогноз" if lang == "ru" else "🔄 New forecast"
+    restart_kb.add(KeyboardButton(restart_text))
+    restart_kb.add(KeyboardButton("/start"))
+    
+    # Убираем старую клавиатуру и показываем сообщение о загрузке
+    processing_text = "⏳ Анализирую данные PocketOption..." if lang == "ru" else "⏳ Analyzing PocketOption data..."
+    processing_msg = await m.answer(processing_text, reply_markup=ReplyKeyboardRemove())
 
     pairs = all_pairs(cat)
     pair_info = pairs.get(pair_human)
     
     if not pair_info:
-        await processing_msg.edit_text(f"Error: Invalid pair {pair_human}")
-        await m.answer("Press /start to begin again", reply_markup=restart_keyboard(lang))
+        await processing_msg.delete()
+        await m.answer(f"Error: Invalid pair {pair_human}", reply_markup=restart_kb)
         await state.finish()
         return
 
     try:
         logger.info(f"Loading OHLC data for {pair_human} ({pair_info}) on {tf}")
         
-        # Кешируем данные по ключу
+        # Кешируем данные
         cache_key = f"{pair_info['po']}_{tf}_{cat}"
         df = cache.get(cache_key)
         
         if df is None:
             df = await load_ohlc(pair_info, timeframe=tf, category=cat)
-            cache.set(cache_key, df)
-            logger.info(f"Cached data for {cache_key}")
+            if df is not None and len(df) > 0:
+                cache.set(cache_key, df)
+                logger.info(f"Cached data for {cache_key}")
         else:
             logger.info(f"Using cached data for {cache_key}")
+        
+        if df is None or len(df) == 0:
+            raise Exception("No data received from PocketOption")
             
         logger.info(f"Got {len(df)} bars for analysis")
         
-        # Используем быстрый предиктор
-        prediction_text, prediction_data = await fast_predictor.get_fast_prediction(
-            pair=pair_human,
-            timeframe=tf,
-            df=df,
-            mode=mode
-        )
+        # Используем стандартный анализ (пока без fast_prediction)
+        if mode == "ind":
+            logger.info("Computing indicators...")
+            ind = compute_indicators(df)
+            action, notes = signal_from_indicators(df, ind)
+            result_message = format_forecast_message(mode, tf, action, ind, notes, lang)
+        else:
+            logger.info("Computing TA signal...")
+            action, notes = simple_ta_signal(df)
+            result_message = format_forecast_message(mode, tf, action, {}, notes, lang)
         
-        # Отправляем прогноз с кнопкой перезапуска
-        await processing_msg.delete()  # Удаляем сообщение о загрузке
-        await m.answer(prediction_text, 
-                      parse_mode='Markdown',
-                      reply_markup=restart_keyboard(lang))
+        # Удаляем сообщение о загрузке
+        await processing_msg.delete()
         
-        logger.info(f"Sent fast forecast for {pair_human} {tf}")
+        # Отправляем прогноз с кнопкой "Новый прогноз"
+        await m.answer(result_message, parse_mode='Markdown', reply_markup=restart_kb)
+        logger.info(f"Sent forecast: {action} for {tf}")
         
     except Exception as e:
-        logger.error(f"Error loading/analyzing OHLC data: {e}")
-        error_text = f"Failed to analyze {pair_human} at timeframe {tf}\nError: {str(e)}"
-        await processing_msg.edit_text(error_text)
-        await m.answer("Press /start to begin again", reply_markup=restart_keyboard(lang))
-        await state.finish()
-        return
+        logger.error(f"Error in analysis: {e}")
+        await processing_msg.delete()
+        error_msg = f"❌ Ошибка анализа\n\nПричина: {str(e)}\n\nПопробуйте другую пару или таймфрейм"
+        await m.answer(error_msg, reply_markup=restart_kb)
 
-    # Отправка графика если включено
-    if ENABLE_CHARTS:
+    # График если включен
+    if ENABLE_CHARTS and df is not None and len(df) > 0:
         try:
             from .utils.charts import plot_candles
             import os, tempfile
@@ -212,6 +238,7 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     await state.finish()
 
 async def load_ohlc(pair_info: dict, timeframe: str, category: str):
+    """Загрузка данных OHLC с обработкой ошибок"""
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
     
@@ -220,7 +247,16 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     
     otc = (category == "otc")
     logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
-    return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=otc)
+    
+    try:
+        df = await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=otc)
+        if df is None or len(df) == 0:
+            logger.warning(f"Empty dataframe received for {pair_info['po']}")
+            return None
+        return df
+    except Exception as e:
+        logger.error(f"Failed to fetch OHLC: {e}")
+        raise
 
 def main():
     print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
@@ -231,7 +267,7 @@ def main():
     if not TELEGRAM_TOKEN:
         raise SystemExit("TELEGRAM_TOKEN env var is required")
     
-    logger.info("Starting Telegram bot with fast predictions...")
+    logger.info("Starting Telegram bot...")
     logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG={DEFAULT_LANG}")
     
     try:
