@@ -26,40 +26,61 @@ PAIR_PRICES = {
 }
 
 async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
-    """Быстрая генерация реалистичных данных"""
+    """Генерация более реалистичных данных с четкими трендами"""
     logger.info(f"FAST DATA: Generating {symbol} {timeframe} (otc={otc})")
     
-    # Небольшая задержка для реалистичности
     await asyncio.sleep(0.3)
     
     base_price = PAIR_PRICES.get(symbol, 1.0000)
     
-    # Волатильность зависит от пары и таймфрейма
-    volatility = 0.002 if 'JPY' in symbol else 0.0008
+    # Увеличенная волатильность
+    volatility = 0.003 if 'JPY' in symbol else 0.0012  # Увеличено
     
-    # Множители для разных таймфреймов
     tf_multipliers = {
-        '30s': 0.2, '1m': 0.3, '2m': 0.4, '3m': 0.5, 
-        '5m': 0.7, '10m': 1.0, '15m': 1.3, '30m': 1.8, '1h': 2.5
+        '30s': 0.3, '1m': 0.4, '2m': 0.5, '3m': 0.6, 
+        '5m': 0.8, '10m': 1.2, '15m': 1.5, '30m': 2.0, '1h': 2.8
     }
     
     volatility *= tf_multipliers.get(timeframe, 1.0)
     
-    # Генерируем 100-150 баров
-    num_bars = random.randint(100, 150)
+    num_bars = random.randint(120, 180)  # Больше данных
     
-    # Используем символ как seed для консистентности
-    np.random.seed(hash(symbol + timeframe) % 1000)
+    # Более динамичный seed
+    current_hour = pd.Timestamp.now().hour
+    np.random.seed((hash(symbol + timeframe) + current_hour) % 1000)
     
-    # Небольшой тренд
-    trend = np.random.choice([-1, 0, 1], p=[0.35, 0.3, 0.35]) * 0.0001
+    # Более выраженные тренды
+    trend_strength = np.random.choice([0.0002, 0.0005, 0.0008, -0.0002, -0.0005, -0.0008, 0], 
+                                     p=[0.15, 0.15, 0.1, 0.15, 0.15, 0.1, 0.2])
     
-    # Генерируем движения цен
-    returns = np.random.normal(trend, volatility, num_bars)
+    # Периоды смены тренда
+    trend_change_period = random.randint(20, 40)
     
-    # Добавляем автокорреляцию для реалистичности
-    for i in range(1, len(returns)):
-        returns[i] = 0.6 * returns[i] + 0.4 * returns[i-1]
+    returns = []
+    current_trend = trend_strength
+    
+    for i in range(num_bars):
+        # Смена тренда каждые N баров
+        if i % trend_change_period == 0 and i > 0:
+            # Иногда меняем направление тренда
+            if random.random() < 0.3:
+                current_trend = -current_trend
+            elif random.random() < 0.2:
+                current_trend = random.choice([0.0003, -0.0003, 0])
+        
+        # Базовое движение с трендом
+        base_return = np.random.normal(current_trend, volatility)
+        
+        # Добавляем импульсы (резкие движения)
+        if random.random() < 0.05:  # 5% шанс импульса
+            impulse = np.random.choice([1, -1]) * volatility * random.uniform(2, 4)
+            base_return += impulse
+        
+        returns.append(base_return)
+    
+    # Увеличенная автокорреляция для более плавных трендов
+    for i in range(2, len(returns)):
+        returns[i] = 0.4 * returns[i] + 0.35 * returns[i-1] + 0.25 * returns[i-2]
     
     # Создаем ценовую серию
     prices = [base_price]
@@ -67,21 +88,39 @@ async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataF
         new_price = prices[-1] * (1 + ret)
         prices.append(new_price)
     
-    # Генерируем OHLC бары
+    # Генерируем более реалистичные OHLC
     ohlc_data = []
     for i in range(1, len(prices)):
         open_price = prices[i-1]
         close_price = prices[i]
         
-        # Реалистичные High/Low
-        spread = abs(close_price - open_price) * 1.2 + volatility * base_price * 0.5
-        high_spread = abs(np.random.normal(0, spread * 0.4))
-        low_spread = abs(np.random.normal(0, spread * 0.4))
+        # Более динамичные внутрибарные движения
+        direction = 1 if close_price > open_price else -1
+        volatility_factor = abs(returns[i-1]) * 3 + volatility
         
-        high_price = max(open_price, close_price) + high_spread
-        low_price = min(open_price, close_price) - low_spread
+        # High и Low с учетом направления
+        if direction > 0:  # Бычья свеча
+            high_extra = abs(np.random.normal(0, volatility_factor * 0.6))
+            low_extra = abs(np.random.normal(0, volatility_factor * 0.3))
+            high_price = max(open_price, close_price) + high_extra
+            low_price = min(open_price, close_price) - low_extra
+        else:  # Медвежья свеча
+            high_extra = abs(np.random.normal(0, volatility_factor * 0.3))
+            low_extra = abs(np.random.normal(0, volatility_factor * 0.6))
+            high_price = max(open_price, close_price) + high_extra
+            low_price = min(open_price, close_price) - low_extra
         
-        # Точность цен
+        # Иногда создаем доджи или молоты
+        if random.random() < 0.08:  # 8% шанс особых паттернов
+            pattern_type = random.choice(['doji', 'hammer', 'shooting_star'])
+            
+            if pattern_type == 'doji':
+                close_price = open_price + np.random.normal(0, volatility * 0.2)
+            elif pattern_type == 'hammer' and direction < 0:
+                low_price = min(open_price, close_price) - volatility_factor * 2
+            elif pattern_type == 'shooting_star' and direction > 0:
+                high_price = max(open_price, close_price) + volatility_factor * 2
+        
         decimals = 3 if 'JPY' in symbol else 5
         
         ohlc_data.append({
@@ -93,17 +132,11 @@ async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataF
     
     df = pd.DataFrame(ohlc_data)
     
-    # Создаем временной индекс - исправлено для pandas 2.0+
+    # Временной индекс
     freq_map = {
-        '30s': '30s',      # Исправлено: было '30S'
-        '1m': '1min', 
-        '2m': '2min', 
-        '3m': '3min',
-        '5m': '5min', 
-        '10m': '10min', 
-        '15m': '15min', 
-        '30m': '30min', 
-        '1h': '1h'         # Исправлено: было '1H'
+        '30s': '30s', '1m': '1min', '2m': '2min', '3m': '3min',
+        '5m': '5min', '10m': '10min', '15m': '15min', 
+        '30m': '30min', '1h': '1h'
     }
     
     freq = freq_map.get(timeframe, '1min')
@@ -114,7 +147,13 @@ async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataF
     df['High'] = np.maximum(df['High'], np.maximum(df['Open'], df['Close']))
     df['Low'] = np.minimum(df['Low'], np.minimum(df['Open'], df['Close']))
     
-    logger.info(f"FAST DATA: Generated {len(df)} bars, price range {df['Low'].min():.5f}-{df['High'].max():.5f}")
+    # Анализируем созданные данные
+    price_change = ((df['Close'].iloc[-1] / df['Close'].iloc[0]) - 1) * 100
+    direction = "UP" if price_change > 0 else "DOWN" if price_change < 0 else "FLAT"
+    
+    logger.info(f"FAST DATA: Generated {len(df)} bars, price change: {price_change:.2f}% {direction}")
+    logger.info(f"Price range: {df['Low'].min():.5f} - {df['High'].max():.5f}")
+    
     return df
 
 def _proxy_dict() -> Optional[dict]:
