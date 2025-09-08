@@ -12,3 +12,5 @@ backoff==2.2.1
 loguru==0.7.2
 mplfinance==0.12.10b0
 playwright==1.46.0
+opencv-python==4.8.1.78
+Pillow==10.0.1
