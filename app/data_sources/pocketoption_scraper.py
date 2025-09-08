@@ -235,60 +235,362 @@ def attach_collectors(page, context, sink_list):
             pass
     context.on("response", on_resp)
 
-async def _quick_ui_interaction(page, symbol: str, timeframe: str, otc: bool):
-    """Быстрое взаимодействие с UI"""
-    logger.debug(f"Quick UI: {symbol} {timeframe} otc={otc}")
+async def _advanced_ui_interaction(page, symbol: str, timeframe: str, otc: bool):
+    """Максимально агрессивное взаимодействие с UI"""
+    logger.debug(f"Advanced UI: {symbol} {timeframe} otc={otc}")
     
     try:
+        # Ждем полной загрузки
+        await page.wait_for_load_state('networkidle', timeout=10000)
+        await asyncio.sleep(3)
+        
+        # Пытаемся найти и кликнуть по любым элементам, содержащим валютные пары
+        logger.debug("Searching for any currency elements...")
+        
+        # Более широкий поиск элементов
+        all_buttons = await page.locator('button, div[role="button"], span[role="button"]').all()
+        logger.debug(f"Found {len(all_buttons)} clickable elements")
+        
+        # Ищем элементы с текстом, похожим на валютные пары
+        currency_patterns = [
+            symbol.replace('/', ''),  # EURUSD
+            symbol,                   # EUR/USD  
+            symbol.replace('/', ' '),  # EUR USD
+            symbol.replace('/', '-'),  # EUR-USD
+        ]
+        
+        if otc:
+            currency_patterns.extend([
+                f"{symbol} OTC",
+                f"{symbol.replace('/', '')} OTC",
+                f"{symbol}OTC"
+            ])
+        
+        # Кликаем по любому элементу, содержащему нашу валютную пару
+        for i, button in enumerate(all_buttons[:50]):  # Проверяем первые 50
+            try:
+                text = await button.inner_text()
+                if any(pattern.upper() in text.upper() for pattern in currency_patterns):
+                    await button.click(timeout=2000)
+                    await asyncio.sleep(1)
+                    logger.debug(f"Clicked currency element: {text}")
+                    break
+            except:
+                continue
+        
+        # Альтернативный поиск через все текстовые элементы
+        all_text_elements = await page.locator('*').all()
+        for element in all_text_elements[:100]:  # Первые 100 элементов
+            try:
+                text = await element.inner_text()
+                if any(pattern.upper() in text.upper() for pattern in currency_patterns):
+                    if await element.is_visible():
+                        await element.click(timeout=1000)
+                        await asyncio.sleep(0.5)
+                        logger.debug(f"Clicked text element: {text}")
+                        break
+            except:
+                continue
+        
+        # Поиск элементов таймфрейма
+        await asyncio.sleep(2)
+        logger.debug(f"Searching for timeframe: {timeframe}")
+        
+        tf_patterns = {
+            '30s': ['30s', 'S30', '30 sec', '30sec', '0:30'],
+            '1m': ['1m', 'M1', '1 min', '1min', '1:00'],
+            '2m': ['2m', 'M2', '2 min', '2min', '2:00'],
+            '3m': ['3m', 'M3', '3 min', '3min', '3:00'],
+            '5m': ['5m', 'M5', '5 min', '5min', '5:00'],
+            '10m': ['10m', 'M10', '10 min', '10min', '10:00'],
+            '15m': ['15m', 'M15', '15 min', '15min', '15:00'],
+            '30m': ['30m', 'M30', '30 min', '30min', '30:00'],
+            '1h': ['1h', 'H1', '1 hour', '1hr', '60m', '60 min']
+        }.get(timeframe, [timeframe])
+        
+        # Ищем элементы таймфрейма среди всех кликабельных элементов
+        for button in all_buttons[:30]:
+            try:
+                text = await button.inner_text()
+                if any(tf.upper() in text.upper() for tf in tf_patterns):
+                    await button.click(timeout=2000)
+                    await asyncio.sleep(1)
+                    logger.debug(f"Clicked timeframe: {text}")
+                    break
+            except:
+                continue
+        
+        # Дополнительные действия для активации данных
         await asyncio.sleep(2)
         
-        # Попытка кликнуть по селектору активов
-        selectors = ['[data-testid*="asset"]', 'button[class*="asset"]', '.asset-selector']
-        for sel in selectors:
-            try:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    await el.click(timeout=1500)
-                    await asyncio.sleep(0.5)
-                    break
-            except:
-                continue
+        # Пытаемся кликнуть по области графика
+        try:
+            chart_area = page.locator('canvas, svg, [class*="chart"], [id*="chart"]').first
+            if await chart_area.count() > 0:
+                await chart_area.click()
+                logger.debug("Clicked chart area")
+        except:
+            pass
         
-        # Поиск символа
-        variants = [symbol, symbol.replace('/', ''), f"{symbol} OTC" if otc else symbol]
-        for variant in variants:
-            try:
-                el = page.get_by_text(variant, exact=True).first
-                if await el.count() > 0:
-                    await el.click(timeout=1500)
-                    await asyncio.sleep(0.5)
-                    logger.debug(f"Selected: {variant}")
-                    break
-            except:
-                continue
+        # Прокручиваем страницу для активации событий
+        await page.evaluate("window.scrollTo(0, 100)")
+        await asyncio.sleep(0.5)
+        await page.evaluate("window.scrollTo(0, 0)")
         
-        # Выбор таймфрейма
-        tf_map = {
-            '30s': ['30s', 'S30'], '1m': ['1m', 'M1'], '2m': ['2m', 'M2'],
-            '3m': ['3m', 'M3'], '5m': ['5m', 'M5'], '10m': ['10m', 'M10'],
-            '15m': ['15m', 'M15'], '30m': ['30m', 'M30'], '1h': ['1h', 'H1']
-        }
+        # Имитируем движения мыши
+        try:
+            await page.mouse.move(400, 300)
+            await asyncio.sleep(0.2)
+            await page.mouse.move(600, 400)
+            await asyncio.sleep(0.2)
+        except:
+            pass
         
-        for tf_variant in tf_map.get(timeframe, [timeframe]):
-            try:
-                el = page.locator(f'button:has-text("{tf_variant}")').first
-                if await el.count() > 0:
-                    await el.click(timeout=1500)
-                    await asyncio.sleep(0.5)
-                    logger.debug(f"Selected TF: {tf_variant}")
-                    break
-            except:
-                continue
-        
-        await asyncio.sleep(2)
+        logger.debug("Advanced UI interaction completed")
         
     except Exception as e:
-        logger.debug(f"UI interaction error: {e}")
+        logger.warning(f"Advanced UI interaction error: {e}")
+
+async def fetch_po_real_enhanced(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
+    """Улучшенный скрапинг с расширенными возможностями"""
+    from playwright.async_api import async_playwright
+    
+    collected = []
+    entry_url = PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
+    
+    logger.info(f"ENHANCED SCRAPING: {symbol} {timeframe} otc={otc}")
+    
+    async with async_playwright() as p:
+        try:
+            # Запускаем браузер с дополнительными аргументами
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-web-security",
+                    "--disable-features=VizDisplayCompositor"
+                ]
+            )
+            
+            ctx_kwargs = {
+                "viewport": {"width": 1920, "height": 1080},  # Больший экран
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "extra_http_headers": {
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                }
+            }
+            
+            proxy_config = _proxy_dict()
+            if proxy_config:
+                ctx_kwargs["proxy"] = proxy_config
+                logger.info("Using proxy for enhanced scraping")
+            
+            ctx = await browser.new_context(**ctx_kwargs)
+            page = await ctx.new_page()
+            
+            # Расширенные коллекторы данных
+            attach_collectors_enhanced(page, ctx, collected)
+            
+            # Увеличенные таймауты
+            page.set_default_timeout(25000)
+            
+            logger.info(f"Navigating to: {entry_url}")
+            await page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
+            
+            # Ждем загрузки JavaScript
+            await asyncio.sleep(5)
+            
+            # Продвинутое взаимодействие с UI
+            await _advanced_ui_interaction(page, symbol, timeframe, otc)
+            
+            # Длительное ожидание данных с периодическими проверками
+            logger.info("Waiting for enhanced data collection...")
+            deadline = time.time() + 45  # Увеличено до 45 секунд
+            
+            while time.time() < deadline and not collected:
+                await asyncio.sleep(1)
+                
+                # Периодически "будим" страницу
+                if int(time.time()) % 10 == 0:
+                    try:
+                        await page.evaluate("console.log('keepalive')")
+                        await page.mouse.move(random.randint(100, 800), random.randint(100, 600))
+                    except:
+                        pass
+                
+                if collected:
+                    logger.info(f"Enhanced data collected: {len(collected)} chunks")
+                    break
+            
+            # Делаем финальный скриншот для отладки
+            try:
+                await page.screenshot(path="/tmp/po_final.png", full_page=True)
+                logger.info("Final screenshot saved")
+            except:
+                pass
+            
+            await page.close()
+            await ctx.close()
+            await browser.close()
+            
+            if collected:
+                logger.info(f"Processing {len(collected)} data chunks...")
+                return await process_collected_data_enhanced(collected)
+                    
+        except Exception as e:
+            logger.error(f"Enhanced scraping error: {e}")
+    
+    raise RuntimeError("Enhanced scraping failed - no data obtained")
+
+def attach_collectors_enhanced(page, context, sink_list):
+    """Расширенные коллекторы с большим покрытием"""
+    def on_ws(ws):
+        logger.debug(f"Enhanced WS: {ws.url}")
+        
+        def _on_frame(ev):
+            try:
+                payload = ev.get("payload", "")
+                
+                # Логируем все сообщения для анализа
+                if len(payload) > 20:
+                    logger.debug(f"WS payload sample: {payload[:50]}...")
+                
+                # Проверяем различные форматы данных
+                bars = _maybe_ohlc(payload)
+                if bars:
+                    logger.info(f"Enhanced WS: Found {len(bars)} OHLC bars")
+                    sink_list.append(bars)
+                    return
+                
+                # Проверяем альтернативные форматы
+                try:
+                    j = json.loads(payload)
+                    
+                    # Ищем данные в различных структурах
+                    for key in ['data', 'candles', 'bars', 'quotes', 'ticks']:
+                        if key in j and isinstance(j[key], list):
+                            logger.debug(f"Found potential data in key: {key}")
+                            # Пробуем парсить как OHLC
+                            test_bars = _maybe_ohlc(json.dumps(j[key]))
+                            if test_bars:
+                                logger.info(f"Enhanced WS: Parsed {len(test_bars)} bars from {key}")
+                                sink_list.append(test_bars)
+                                return
+                                
+                except Exception:
+                    pass
+                    
+            except Exception as e:
+                logger.debug(f"Enhanced WS processing error: {e}")
+        
+        ws.on("framereceived", _on_frame)
+        ws.on("framesent", _on_frame)
+    
+    page.on("websocket", on_ws)
+
+    def on_resp(resp):
+        try:
+            url = resp.url.lower()
+            
+            # Расширенный список ключевых слов
+            keywords = [
+                "ohlc", "candle", "bar", "chart", "api", "data", "quote", 
+                "price", "market", "trading", "feed", "stream", "socket",
+                "history", "tick", "forex", "currency"
+            ]
+            
+            if any(word in url for word in keywords):
+                content_type = resp.headers.get("content-type", "").lower()
+                
+                if "json" in content_type:
+                    async def _read():
+                        try:
+                            j = await resp.json()
+                            bars = _maybe_ohlc(json.dumps(j))
+                            if bars:
+                                logger.info(f"Enhanced HTTP: Found {len(bars)} bars from {url}")
+                                sink_list.append(bars)
+                            else:
+                                logger.debug(f"Enhanced HTTP: Non-OHLC data from {url}")
+                        except Exception as e:
+                            logger.debug(f"Enhanced HTTP processing error: {e}")
+                    
+                    context.loop.create_task(_read())
+        except Exception as e:
+            logger.debug(f"Enhanced response handler error: {e}")
+    
+    context.on("response", on_resp)
+
+async def process_collected_data_enhanced(collected):
+    """Улучшенная обработка собранных данных"""
+    dfs = []
+    
+    for i, chunk in enumerate(collected):
+        try:
+            logger.debug(f"Processing chunk {i+1}/{len(collected)}")
+            
+            df = pd.DataFrame(chunk).rename(columns=str.lower)
+            
+            # Ищем временную колонку
+            time_col = None
+            for col in ["time", "timestamp", "t", "date", "datetime", "ts"]:
+                if col in df.columns:
+                    time_col = col
+                    break
+            
+            if time_col:
+                # Различные способы парсинга времени
+                try:
+                    if pd.api.types.is_numeric_dtype(df[time_col]):
+                        # Unix timestamp
+                        df["time"] = pd.to_datetime(df[time_col], unit="s", errors="coerce", utc=True)
+                    else:
+                        # Строковое время
+                        df["time"] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+                except:
+                    continue
+                
+                df = df.set_index("time")
+            
+            # Ищем OHLC колонки с различными названиями
+            col_mapping = {}
+            for target, variants in [
+                ("open", ["open", "o", "opening", "start"]),
+                ("high", ["high", "h", "max", "top"]),
+                ("low", ["low", "l", "min", "bottom"]),
+                ("close", ["close", "c", "closing", "end", "last"])
+            ]:
+                for variant in variants:
+                    if variant in df.columns:
+                        col_mapping[variant] = target
+                        break
+            
+            if len(col_mapping) >= 4:  # Нашли все OHLC
+                df = df.rename(columns=col_mapping)
+                df = df[["open", "high", "low", "close"]].astype(float).dropna()
+                
+                if len(df) > 5:  # Минимум 5 баров
+                    dfs.append(df)
+                    logger.info(f"Successfully processed chunk {i+1}: {len(df)} bars")
+                    
+        except Exception as e:
+            logger.debug(f"Error processing chunk {i+1}: {e}")
+    
+    if not dfs:
+        raise RuntimeError("No processable OHLC data found in collected chunks")
+    
+    # Выбираем лучший датасет
+    result = max(dfs, key=len)
+    result = result.loc[~result.index.duplicated(keep="last")].sort_index()
+    
+    # Переименовываем колонки в ожидаемый формат
+    result.columns = ['Open', 'High', 'Low', 'Close']
+    
+    logger.info(f"Enhanced processing complete: {len(result)} final bars")
+    return result
 
 async def fetch_po_real_fast(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
     """Быстрый реальный скрапинг PocketOption"""
