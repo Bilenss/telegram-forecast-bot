@@ -253,7 +253,21 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
         if df is None or len(df) == 0:
             logger.warning(f"Empty dataframe received for {pair_info['po']}")
             return None
+        
+        # Исправляем названия колонок если нужно
+        try:
+            from .utils.dataframe_fix import fix_ohlc_columns, validate_ohlc_data
+            df = fix_ohlc_columns(df)
+            if not validate_ohlc_data(df):
+                logger.warning("OHLC data validation failed, but continuing")
+        except ImportError:
+            # Если модуль не найден, пробуем простое переименование
+            if 'close' in df.columns:
+                df.columns = ['Open', 'High', 'Low', 'Close']
+        
+        logger.info(f"DataFrame columns: {df.columns.tolist()}")
         return df
+        
     except Exception as e:
         logger.error(f"Failed to fetch OHLC: {e}")
         raise
