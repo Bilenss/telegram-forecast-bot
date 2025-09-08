@@ -317,20 +317,35 @@ async def _advanced_ui_interaction(page, symbol: str, timeframe: str, otc: bool)
         logger.warning(f"Advanced UI interaction error: {e}")
 
 def attach_collectors_enhanced(page, context, sink_list):
-    """Расширенные коллекторы с большим покрытием"""
+    """Исправленные расширенные коллекторы"""
     def on_ws(ws):
         logger.debug(f"Enhanced WS: {ws.url}")
         
-        def _on_frame(ev):
+        def _on_frame(event):
             try:
-                payload = ev.get("payload", "")
+                # Исправляем обработку событий
+                if hasattr(event, 'payload'):
+                    payload = event.payload
+                elif isinstance(event, dict) and 'payload' in event:
+                    payload = event['payload']
+                elif isinstance(event, str):
+                    payload = event
+                else:
+                    return
                 
-                # Логируем все сообщения для анализа
-                if len(payload) > 20:
-                    logger.debug(f"WS payload sample: {payload[:50]}...")
+                # Конвертируем bytes в string если нужно
+                if isinstance(payload, bytes):
+                    try:
+                        payload = payload.decode('utf-8')
+                    except:
+                        return
+                
+                # Логируем сообщения для анализа
+                if len(str(payload)) > 20:
+                    logger.debug(f"WS payload sample: {str(payload)[:50]}...")
                 
                 # Проверяем различные форматы данных
-                bars = _maybe_ohlc(payload)
+                bars = _maybe_ohlc(str(payload))
                 if bars:
                     logger.info(f"Enhanced WS: Found {len(bars)} OHLC bars")
                     sink_list.append(bars)
@@ -338,11 +353,11 @@ def attach_collectors_enhanced(page, context, sink_list):
                 
                 # Проверяем альтернативные форматы
                 try:
-                    j = json.loads(payload)
+                    j = json.loads(str(payload))
                     
                     # Ищем данные в различных структурах
                     for key in ['data', 'candles', 'bars', 'quotes', 'ticks']:
-                        if key in j and isinstance(j[key], list):
+                        if isinstance(j, dict) and key in j and isinstance(j[key], list):
                             logger.debug(f"Found potential data in key: {key}")
                             # Пробуем парсить как OHLC
                             test_bars = _maybe_ohlc(json.dumps(j[key]))
@@ -357,8 +372,12 @@ def attach_collectors_enhanced(page, context, sink_list):
             except Exception as e:
                 logger.debug(f"Enhanced WS processing error: {e}")
         
-        ws.on("framereceived", _on_frame)
-        ws.on("framesent", _on_frame)
+        # Подключаем обработчики
+        try:
+            ws.on("framereceived", _on_frame)
+            ws.on("framesent", _on_frame)
+        except Exception as e:
+            logger.debug(f"WS handler attachment error: {e}")
     
     page.on("websocket", on_ws)
 
@@ -389,7 +408,13 @@ def attach_collectors_enhanced(page, context, sink_list):
                         except Exception as e:
                             logger.debug(f"Enhanced HTTP processing error: {e}")
                     
-                    context.loop.create_task(_read())
+                    # Исправляем получение event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(_read())
+                    except:
+                        asyncio.create_task(_read())
+                        
         except Exception as e:
             logger.debug(f"Enhanced response handler error: {e}")
     
