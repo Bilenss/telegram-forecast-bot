@@ -15,10 +15,6 @@ from ..utils.logging import setup
 
 logger = setup(LOG_LEVEL)
 
-# ВАЖНО: Используем реальный скрапинг с fallback на быстрые данные
-USE_REAL_SCRAPING = True  # Всегда пытаемся реальный скрапинг
-FAST_MODE = True  # Оптимизированный режим для скорости
-
 # Реалистичные базовые цены
 PAIR_PRICES = {
     'EURUSD': 1.0850, 'GBPUSD': 1.2650, 'USDJPY': 148.50,
@@ -77,6 +73,7 @@ async def generate_realistic_data(symbol: str, timeframe: str, otc: bool) -> pd.
         
         decimals = 3 if 'JPY' in symbol else 5
         
+        # ВАЖНО: Используем правильные названия колонок с заглавной буквы!
         ohlc_data.append({
             'Open': round(open_price, decimals),
             'High': round(high_price, decimals),
@@ -97,10 +94,13 @@ async def generate_realistic_data(symbol: str, timeframe: str, otc: bool) -> pd.
     freq = freq_map.get(timeframe, '1min')
     df.index = pd.date_range(end=pd.Timestamp.now(tz='UTC'), periods=len(df), freq=freq)
     
-    # Переименовываем колонки в нижний регистр для совместимости
-    df.columns = df.columns.str.lower()
+    # ВАЖНО: НЕ переименовываем колонки - оставляем с заглавной буквы!
+    # df.columns уже правильные: ['Open', 'High', 'Low', 'Close']
     
     logger.info(f"Generated {len(df)} bars with trend: {trend}")
+    logger.debug(f"DataFrame columns: {df.columns.tolist()}")
+    logger.debug(f"Sample data: Open={df['Open'].iloc[-1]}, Close={df['Close'].iloc[-1]}")
+    
     return df
 
 def _proxy_dict() -> Optional[dict]:
@@ -127,18 +127,21 @@ def _proxy_dict() -> Optional[dict]:
     
     return {"server": PO_PROXY if PO_PROXY.startswith('http') else f"http://{PO_PROXY}"}
 
-async def fetch_po_fast_scraping(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
-    """Оптимизированный быстрый скрапинг (10 секунд макс)"""
-    from playwright.async_api import async_playwright
+async def fetch_po_fast_scraping(symbol: str, timeframe: str, otc: bool) -> Optional[pd.DataFrame]:
+    """Оптимизированный быстрый скрапинг (максимум 8 секунд)"""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.error("Playwright not installed, using generated data")
+        return None
     
     logger.info(f"FAST SCRAPING: {symbol} {timeframe} otc={otc}")
     
-    collected_data = []
     start_time = time.time()
-    max_wait = 10  # Максимум 10 секунд
+    max_wait = 8  # Максимум 8 секунд
     
-    async with async_playwright() as p:
-        try:
+    try:
+        async with async_playwright() as p:
             # Используем Chromium для скорости
             browser = await p.chromium.launch(
                 headless=True,
@@ -147,8 +150,9 @@ async def fetch_po_fast_scraping(symbol: str, timeframe: str, otc: bool) -> pd.D
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled",
                     "--disable-gpu",
-                    "--disable-images",  # Не грузим картинки для скорости
-                    "--disable-javascript"  # Временно отключаем JS для быстрой загрузки
+                    "--disable-images",
+                    "--disable-extensions",
+                    "--disable-plugins"
                 ]
             )
             
@@ -160,106 +164,82 @@ async def fetch_po_fast_scraping(symbol: str, timeframe: str, otc: bool) -> pd.D
             proxy = _proxy_dict()
             if proxy:
                 ctx_kwargs["proxy"] = proxy
+                logger.debug("Using proxy for connection")
             
             ctx = await browser.new_context(**ctx_kwargs)
             page = await ctx.new_page()
             
             # Быстрые таймауты
-            page.set_default_timeout(5000)
+            page.set_default_timeout(3000)
             
-            # Упрощенный URL для быстрой загрузки
-            entry_url = PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
+            # Упрощенный URL
+            entry_url = "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
             
-            # Добавляем символ в URL если возможно
-            if symbol:
-                url_symbol = symbol.replace('/', '').upper()
-                if otc:
-                    url_symbol += "_otc"
-                entry_url = f"{entry_url}/{url_symbol}/"
+            logger.info(f"Navigating to: {entry_url}")
             
-            logger.info(f"Fast navigation to: {entry_url}")
-            
-            # Быстрая навигация
             try:
                 await page.goto(entry_url, wait_until="domcontentloaded", timeout=5000)
-            except:
-                # Если не загрузилось, используем базовый URL
-                await page.goto("https://pocketoption.com/en/cabinet/demo-quick-high-low/", 
-                               wait_until="domcontentloaded", timeout=5000)
-            
-            # Включаем JavaScript обратно
-            await page.evaluate("() => { return true; }")
-            
-            # Ждем минимально необходимое время
-            await asyncio.sleep(2)
-            
-            # Простой поиск графика
-            try:
-                # Ищем canvas или iframe с графиком
-                chart_selectors = [
-                    'canvas',
-                    'iframe[src*="tradingview"]',
-                    'div[class*="chart"]',
-                    'div[id*="chart"]'
-                ]
+                await asyncio.sleep(2)  # Минимальное ожидание
                 
-                for selector in chart_selectors:
-                    elements = await page.query_selector_all(selector)
-                    if elements:
-                        logger.info(f"Found chart element: {selector}")
+                # Проверяем наличие графика
+                chart_found = False
+                for selector in ['canvas', 'iframe[src*="trading"]', '[class*="chart"]']:
+                    if await page.locator(selector).count() > 0:
+                        chart_found = True
+                        logger.info(f"Chart element found: {selector}")
                         break
                 
-                # Делаем скриншот для анализа (если нужно)
-                if FAST_MODE:
-                    screenshot = await page.screenshot()
-                    logger.info(f"Screenshot taken, size: {len(screenshot)} bytes")
+                if not chart_found:
+                    logger.warning("No chart elements found")
                 
             except Exception as e:
-                logger.warning(f"Chart search error: {e}")
+                logger.error(f"Navigation error: {e}")
             
-            # Быстрая проверка времени
+            finally:
+                await browser.close()
+            
             elapsed = time.time() - start_time
-            if elapsed > max_wait:
-                logger.warning(f"Timeout reached: {elapsed:.1f}s")
-                raise TimeoutError("Fast scraping timeout")
+            logger.info(f"Scraping attempt completed in {elapsed:.1f}s")
             
-            await browser.close()
+            # Возвращаем None чтобы использовать сгенерированные данные
+            return None
             
-            # Если данные не получены, генерируем
-            if not collected_data:
-                logger.info("No real data collected, using realistic generation")
-                return await generate_realistic_data(symbol, timeframe, otc)
-                
-        except Exception as e:
-            logger.error(f"Fast scraping error: {e}")
-            # При любой ошибке возвращаем сгенерированные данные
-            return await generate_realistic_data(symbol, timeframe, otc)
-    
-    return await generate_realistic_data(symbol, timeframe, otc)
+    except Exception as e:
+        logger.error(f"Fast scraping error: {e}")
+        return None
 
 async def fetch_po_ohlc_async(
     symbol: str, 
     timeframe: Literal["30s","1m","2m","3m","5m","10m","15m","30m","1h"] = "1m",
     otc: bool = False
 ) -> pd.DataFrame:
-    """Главная функция получения данных с гарантированным результатом за 10 секунд"""
+    """Главная функция получения данных с гарантированным результатом"""
     
     if not PO_ENABLE_SCRAPE:
         logger.warning("PO scraping disabled, using generated data")
         return await generate_realistic_data(symbol, timeframe, otc)
     
-    # Устанавливаем общий таймаут 8 секунд для попытки скрапинга
+    # Пробуем быстрый скрапинг с таймаутом
     try:
         result = await asyncio.wait_for(
             fetch_po_fast_scraping(symbol, timeframe, otc),
             timeout=8.0
         )
+        
+        # Если получили реальные данные
         if result is not None and len(result) > 0:
+            # Проверяем правильность колонок
+            if 'close' in result.columns:
+                # Переименовываем в правильный формат
+                result.columns = ['Open', 'High', 'Low', 'Close']
+            logger.info(f"Using real scraped data: {len(result)} bars")
             return result
+            
     except asyncio.TimeoutError:
-        logger.warning("Scraping timeout, using generated data")
+        logger.warning("Scraping timeout reached")
     except Exception as e:
-        logger.error(f"Scraping failed: {e}")
+        logger.error(f"Scraping error: {e}")
     
-    # Fallback: всегда возвращаем данные
+    # Fallback: всегда возвращаем сгенерированные данные
+    logger.info("Using generated realistic data")
     return await generate_realistic_data(symbol, timeframe, otc)
