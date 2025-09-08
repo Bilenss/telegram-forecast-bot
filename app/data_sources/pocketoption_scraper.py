@@ -17,7 +17,7 @@ from ..utils.logging import setup
 logger = setup(LOG_LEVEL)
 
 # Быстрый режим - используем mock данные по умолчанию
-USE_REAL_SCRAPING = False  # Установите True для реального скрапинга
+USE_REAL_SCRAPING = True  # Установите True для реального скрапинга
 
 # Реалистичные базовые цены
 PAIR_PRICES = {
