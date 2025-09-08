@@ -200,41 +200,6 @@ def _maybe_ohlc(payload: str):
         return [j]
     return None
 
-def attach_collectors(page, context, sink_list):
-    """Сборщики данных WebSocket/HTTP"""
-    def on_ws(ws):
-        logger.debug(f"WS: {ws.url}")
-        def _on(ev):
-            try:
-                bars = _maybe_ohlc(ev["payload"])
-                if bars:
-                    logger.info(f"WS: Got {len(bars)} OHLC bars")
-                    sink_list.append(bars)
-            except Exception:
-                pass
-        ws.on("framereceived", _on)
-        ws.on("framesent", _on)
-    page.on("websocket", on_ws)
-
-    def on_resp(resp):
-        try:
-            url = resp.url.lower()
-            if any(k in url for k in ("ohlc", "candl", "bar", "chart", "api", "data")):
-                if "json" in resp.headers.get("content-type", "").lower():
-                    async def _read():
-                        try:
-                            j = await resp.json()
-                            bars = _maybe_ohlc(json.dumps(j))
-                            if bars:
-                                logger.info(f"HTTP: Got {len(bars)} bars")
-                                sink_list.append(bars)
-                        except Exception:
-                            pass
-                    context.loop.create_task(_read())
-        except Exception:
-            pass
-    context.on("response", on_resp)
-
 async def _advanced_ui_interaction(page, symbol: str, timeframe: str, otc: bool):
     """Максимально агрессивное взаимодействие с UI"""
     logger.debug(f"Advanced UI: {symbol} {timeframe} otc={otc}")
@@ -350,100 +315,6 @@ async def _advanced_ui_interaction(page, symbol: str, timeframe: str, otc: bool)
         
     except Exception as e:
         logger.warning(f"Advanced UI interaction error: {e}")
-
-async def fetch_po_real_enhanced(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
-    """Улучшенный скрапинг с расширенными возможностями"""
-    from playwright.async_api import async_playwright
-    
-    collected = []
-    entry_url = PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
-    
-    logger.info(f"ENHANCED SCRAPING: {symbol} {timeframe} otc={otc}")
-    
-    async with async_playwright() as p:
-        try:
-            # Запускаем браузер с дополнительными аргументами
-            browser = await p.chromium.launch(
-                headless=True, 
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-web-security",
-                    "--disable-features=VizDisplayCompositor"
-                ]
-            )
-            
-            ctx_kwargs = {
-                "viewport": {"width": 1920, "height": 1080},  # Больший экран
-                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "extra_http_headers": {
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-                }
-            }
-            
-            proxy_config = _proxy_dict()
-            if proxy_config:
-                ctx_kwargs["proxy"] = proxy_config
-                logger.info("Using proxy for enhanced scraping")
-            
-            ctx = await browser.new_context(**ctx_kwargs)
-            page = await ctx.new_page()
-            
-            # Расширенные коллекторы данных
-            attach_collectors_enhanced(page, ctx, collected)
-            
-            # Увеличенные таймауты
-            page.set_default_timeout(25000)
-            
-            logger.info(f"Navigating to: {entry_url}")
-            await page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            
-            # Ждем загрузки JavaScript
-            await asyncio.sleep(5)
-            
-            # Продвинутое взаимодействие с UI
-            await _advanced_ui_interaction(page, symbol, timeframe, otc)
-            
-            # Длительное ожидание данных с периодическими проверками
-            logger.info("Waiting for enhanced data collection...")
-            deadline = time.time() + 45  # Увеличено до 45 секунд
-            
-            while time.time() < deadline and not collected:
-                await asyncio.sleep(1)
-                
-                # Периодически "будим" страницу
-                if int(time.time()) % 10 == 0:
-                    try:
-                        await page.evaluate("console.log('keepalive')")
-                        await page.mouse.move(random.randint(100, 800), random.randint(100, 600))
-                    except:
-                        pass
-                
-                if collected:
-                    logger.info(f"Enhanced data collected: {len(collected)} chunks")
-                    break
-            
-            # Делаем финальный скриншот для отладки
-            try:
-                await page.screenshot(path="/tmp/po_final.png", full_page=True)
-                logger.info("Final screenshot saved")
-            except:
-                pass
-            
-            await page.close()
-            await ctx.close()
-            await browser.close()
-            
-            if collected:
-                logger.info(f"Processing {len(collected)} data chunks...")
-                return await process_collected_data_enhanced(collected)
-                    
-        except Exception as e:
-            logger.error(f"Enhanced scraping error: {e}")
-    
-    raise RuntimeError("Enhanced scraping failed - no data obtained")
 
 def attach_collectors_enhanced(page, context, sink_list):
     """Расширенные коллекторы с большим покрытием"""
@@ -592,78 +463,99 @@ async def process_collected_data_enhanced(collected):
     logger.info(f"Enhanced processing complete: {len(result)} final bars")
     return result
 
-async def fetch_po_real_fast(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
-    """Быстрый реальный скрапинг PocketOption"""
+async def fetch_po_real_enhanced(symbol: str, timeframe: str, otc: bool) -> pd.DataFrame:
+    """Улучшенный скрапинг с расширенными возможностями"""
     from playwright.async_api import async_playwright
     
     collected = []
     entry_url = PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
     
-    logger.info(f"REAL SCRAPING: {symbol} {timeframe} otc={otc}")
+    logger.info(f"ENHANCED SCRAPING: {symbol} {timeframe} otc={otc}")
     
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            # Запускаем браузер с дополнительными аргументами
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-web-security",
+                    "--disable-features=VizDisplayCompositor"
+                ]
+            )
             
             ctx_kwargs = {
-                "viewport": {"width": 1366, "height": 768},
-                "user_agent": random.choice(UAS),
+                "viewport": {"width": 1920, "height": 1080},  # Больший экран
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "extra_http_headers": {
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                }
             }
             
             proxy_config = _proxy_dict()
             if proxy_config:
                 ctx_kwargs["proxy"] = proxy_config
-                logger.info("Using proxy")
+                logger.info("Using proxy for enhanced scraping")
             
             ctx = await browser.new_context(**ctx_kwargs)
             page = await ctx.new_page()
             
-            attach_collectors(page, ctx, collected)
+            # Расширенные коллекторы данных
+            attach_collectors_enhanced(page, ctx, collected)
             
-            page.set_default_timeout(15000)
+            # Увеличенные таймауты
+            page.set_default_timeout(25000)
             
-            await page.goto(entry_url, wait_until="domcontentloaded")
-            await asyncio.sleep(3)
+            logger.info(f"Navigating to: {entry_url}")
+            await page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
             
-            await _quick_ui_interaction(page, symbol, timeframe, otc)
+            # Ждем загрузки JavaScript
+            await asyncio.sleep(5)
             
-            # Ждем данные максимум 15 секунд
-            deadline = time.time() + 15
+            # Продвинутое взаимодействие с UI
+            await _advanced_ui_interaction(page, symbol, timeframe, otc)
+            
+            # Длительное ожидание данных с периодическими проверками
+            logger.info("Waiting for enhanced data collection...")
+            deadline = time.time() + 45  # Увеличено до 45 секунд
+            
             while time.time() < deadline and not collected:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
+                
+                # Периодически "будим" страницу
+                if int(time.time()) % 10 == 0:
+                    try:
+                        await page.evaluate("console.log('keepalive')")
+                        await page.mouse.move(random.randint(100, 800), random.randint(100, 600))
+                    except:
+                        pass
+                
+                if collected:
+                    logger.info(f"Enhanced data collected: {len(collected)} chunks")
+                    break
+            
+            # Делаем финальный скриншот для отладки
+            try:
+                await page.screenshot(path="/tmp/po_final.png", full_page=True)
+                logger.info("Final screenshot saved")
+            except:
+                pass
             
             await page.close()
             await ctx.close()
             await browser.close()
             
             if collected:
-                logger.info(f"Collected {len(collected)} chunks")
-                
-                # Быстрая обработка
-                dfs = []
-                for chunk in collected:
-                    try:
-                        df = pd.DataFrame(chunk).rename(columns=str.lower)
-                        time_col = next((c for c in ["time", "timestamp", "t"] if c in df.columns), None)
-                        if time_col:
-                            df["time"] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
-                            df = df.set_index("time")
-                        df = df[["open", "high", "low", "close"]].astype(float).dropna()
-                        if len(df) > 10:
-                            dfs.append(df)
-                    except:
-                        continue
-                
-                if dfs:
-                    result = max(dfs, key=len)
-                    result.columns = ['Open', 'High', 'Low', 'Close']
-                    logger.info(f"Real data: {len(result)} bars")
-                    return result
+                logger.info(f"Processing {len(collected)} data chunks...")
+                return await process_collected_data_enhanced(collected)
                     
         except Exception as e:
-            logger.warning(f"Real scraping failed: {e}")
+            logger.error(f"Enhanced scraping error: {e}")
     
-    raise RuntimeError("No real data obtained")
+    raise RuntimeError("Enhanced scraping failed - no data obtained")
 
 async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["30s","1m","2m","3m","5m","10m","15m","30m","1h"]="1m", otc: bool=False) -> pd.DataFrame:
     """Главная функция получения данных"""
@@ -673,7 +565,7 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["30s","1m","2m","3
     # Если включен реальный скрапинг, пробуем его
     if USE_REAL_SCRAPING:
         try:
-            return await fetch_po_real_fast(symbol, timeframe, otc)
+            return await fetch_po_real_enhanced(symbol, timeframe, otc)
         except Exception as e:
             logger.warning(f"Real scraping failed: {e}")
             logger.info("Falling back to fast mock data")
