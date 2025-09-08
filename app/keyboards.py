@@ -1,5 +1,6 @@
 # app/keyboards.py
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+# app/keyboards.py
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 def mode_keyboard(lang):
     """Клавиатура выбора режима анализа"""
@@ -53,8 +54,13 @@ def timeframe_keyboard(lang, po_available=True):
 
 def restart_keyboard(lang="en"):
     """Клавиатура с кнопкой "Начать заново" после получения прогноза"""
-    restart_text = "🔄 Начать заново" if lang == "ru" else "🔄 Start over"
+    restart_text = "🔄 Новый прогноз" if lang == "ru" else "🔄 New forecast"
     
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     kb.add(KeyboardButton(restart_text))
+    kb.add(KeyboardButton("/start"))
     return kb
+
+def remove_keyboard():
+    """Удаление клавиатуры"""
+    return ReplyKeyboardRemove()
