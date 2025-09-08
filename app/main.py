@@ -151,4 +151,94 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     
     if not pair_info:
         await processing_msg.edit_text(f"Error: Invalid pair {pair_human}")
-        await m.answer("Press /start to begin again", reply_markup=restart_
+        await m.answer("Press /start to begin again", reply_markup=restart_keyboard(lang))
+        await state.finish()
+        return
+
+    try:
+        logger.info(f"Loading OHLC data for {pair_human} ({pair_info}) on {tf}")
+        
+        # Кешируем данные по ключу
+        cache_key = f"{pair_info['po']}_{tf}_{cat}"
+        df = cache.get(cache_key)
+        
+        if df is None:
+            df = await load_ohlc(pair_info, timeframe=tf, category=cat)
+            cache.set(cache_key, df)
+            logger.info(f"Cached data for {cache_key}")
+        else:
+            logger.info(f"Using cached data for {cache_key}")
+            
+        logger.info(f"Got {len(df)} bars for analysis")
+        
+        # Используем быстрый предиктор
+        prediction_text, prediction_data = await fast_predictor.get_fast_prediction(
+            pair=pair_human,
+            timeframe=tf,
+            df=df,
+            mode=mode
+        )
+        
+        # Отправляем прогноз с кнопкой перезапуска
+        await processing_msg.delete()  # Удаляем сообщение о загрузке
+        await m.answer(prediction_text, 
+                      parse_mode='Markdown',
+                      reply_markup=restart_keyboard(lang))
+        
+        logger.info(f"Sent fast forecast for {pair_human} {tf}")
+        
+    except Exception as e:
+        logger.error(f"Error loading/analyzing OHLC data: {e}")
+        error_text = f"Failed to analyze {pair_human} at timeframe {tf}\nError: {str(e)}"
+        await processing_msg.edit_text(error_text)
+        await m.answer("Press /start to begin again", reply_markup=restart_keyboard(lang))
+        await state.finish()
+        return
+
+    # Отправка графика если включено
+    if ENABLE_CHARTS:
+        try:
+            from .utils.charts import plot_candles
+            import os, tempfile
+            with tempfile.TemporaryDirectory() as tmpd:
+                p = os.path.join(tmpd, "chart.png")
+                out = plot_candles(df, p)
+                if out and os.path.exists(out):
+                    await m.answer_photo(types.InputFile(out))
+                    logger.info("Chart sent successfully")
+        except Exception as e:
+            logger.error(f"Chart error: {e}")
+
+    await state.finish()
+
+async def load_ohlc(pair_info: dict, timeframe: str, category: str):
+    if not PO_ENABLE_SCRAPE:
+        raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
+    
+    if not pair_info or 'po' not in pair_info:
+        raise RuntimeError(f"Invalid pair info: {pair_info}")
+    
+    otc = (category == "otc")
+    logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
+    return await fetch_po_ohlc_async(pair_info['po'], timeframe=timeframe, otc=otc)
+
+def main():
+    print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
+    print(f"PO_ENABLE_SCRAPE: {PO_ENABLE_SCRAPE}")
+    print(f"DEFAULT_LANG: {DEFAULT_LANG}")
+    print(f"LOG_LEVEL: {LOG_LEVEL}")
+    
+    if not TELEGRAM_TOKEN:
+        raise SystemExit("TELEGRAM_TOKEN env var is required")
+    
+    logger.info("Starting Telegram bot with fast predictions...")
+    logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG={DEFAULT_LANG}")
+    
+    try:
+        executor.start_polling(dp, skip_updates=True)
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
