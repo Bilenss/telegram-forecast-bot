@@ -586,12 +586,12 @@ async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["30s","1m","2m","3
     # Если включен реальный скрапинг, пробуем разные методы
     if USE_REAL_SCRAPING:
         # Метод 1: Анализ скриншотов (приоритет для 5м таймфрейма)
-        if USE_SCREENSHOT_ANALYSIS and SCREENSHOT_AVAILABLE and timeframe == "5m":
-            try:
-                logger.info("Trying screenshot analysis...")
-                return await fetch_po_screenshot_data(symbol, timeframe, otc)
-            except Exception as e:
-                logger.warning(f"Screenshot analysis failed: {e}")
+        if USE_SCREENSHOT_ANALYSIS and SCREENSHOT_AVAILABLE:
+    try:
+        logger.info("Trying screenshot analysis...")
+        return await fetch_po_screenshot_data(symbol, timeframe, otc)
+    except Exception as e:
+        logger.warning(f"Screenshot analysis failed: {e}")
         
         # Метод 2: Обычный enhanced скрапинг
         try:
