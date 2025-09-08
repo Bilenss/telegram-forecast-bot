@@ -18,6 +18,7 @@ logger = setup(LOG_LEVEL)
 
 # Быстрый режим - используем mock данные по умолчанию
 USE_REAL_SCRAPING = True  # Установите True для реального скрапинга
+USE_SCREENSHOT_ANALYSIS = True  # Включить анализ скриншотов
 
 # Реалистичные базовые цены
 PAIR_PRICES = {
@@ -156,6 +157,15 @@ async def generate_fast_data(symbol: str, timeframe: str, otc: bool) -> pd.DataF
     
     return df
 
+# Импорт анализатора скриншотов
+try:
+    from .screenshot_analyzer import fetch_po_screenshot_data
+    SCREENSHOT_AVAILABLE = True
+    logger.info("Screenshot analyzer loaded successfully")
+except ImportError as e:
+    SCREENSHOT_AVAILABLE = False
+    logger.warning(f"Screenshot analyzer not available: {e}")
+
 def _proxy_dict() -> Optional[dict]:
     """Конвертация прокси для Playwright"""
     if not PO_PROXY:
@@ -240,20 +250,6 @@ async def _advanced_ui_interaction(page, symbol: str, timeframe: str, otc: bool)
                     await asyncio.sleep(1)
                     logger.debug(f"Clicked currency element: {text}")
                     break
-            except:
-                continue
-        
-        # Альтернативный поиск через все текстовые элементы
-        all_text_elements = await page.locator('*').all()
-        for element in all_text_elements[:100]:  # Первые 100 элементов
-            try:
-                text = await element.inner_text()
-                if any(pattern.upper() in text.upper() for pattern in currency_patterns):
-                    if await element.is_visible():
-                        await element.click(timeout=1000)
-                        await asyncio.sleep(0.5)
-                        logger.debug(f"Clicked text element: {text}")
-                        break
             except:
                 continue
         
@@ -583,17 +579,27 @@ async def fetch_po_real_enhanced(symbol: str, timeframe: str, otc: bool) -> pd.D
     raise RuntimeError("Enhanced scraping failed - no data obtained")
 
 async def fetch_po_ohlc_async(symbol: str, timeframe: Literal["30s","1m","2m","3m","5m","10m","15m","30m","1h"]="1m", otc: bool=False) -> pd.DataFrame:
-    """Главная функция получения данных"""
+    """Главная функция получения данных с приоритетом методов"""
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PO scraping disabled")
     
-    # Если включен реальный скрапинг, пробуем его
+    # Если включен реальный скрапинг, пробуем разные методы
     if USE_REAL_SCRAPING:
+        # Метод 1: Анализ скриншотов (приоритет для 5м таймфрейма)
+        if USE_SCREENSHOT_ANALYSIS and SCREENSHOT_AVAILABLE and timeframe == "5m":
+            try:
+                logger.info("Trying screenshot analysis...")
+                return await fetch_po_screenshot_data(symbol, timeframe, otc)
+            except Exception as e:
+                logger.warning(f"Screenshot analysis failed: {e}")
+        
+        # Метод 2: Обычный enhanced скрапинг
         try:
+            logger.info("Trying enhanced websocket scraping...")
             return await fetch_po_real_enhanced(symbol, timeframe, otc)
         except Exception as e:
-            logger.warning(f"Real scraping failed: {e}")
-            logger.info("Falling back to fast mock data")
+            logger.warning(f"Enhanced scraping failed: {e}")
+            logger.info("Falling back to mock data")
     
-    # Используем быструю генерацию данных
+    # Fallback: Используем быструю генерацию данных
     return await generate_fast_data(symbol, timeframe, otc)
