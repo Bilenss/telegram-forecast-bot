@@ -1,46 +1,40 @@
 # app/keyboards.py
-# app/keyboards.py
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
-def mode_keyboard(lang):
-    """Клавиатура выбора режима анализа"""
-    d = {"ru": ["📊 Технический анализ", "📈 Индикаторы"],
-         "en": ["📊 Technical analysis", "📈 Indicators"]}
+def mode_keyboard(lang="en"):
+    """Analysis mode selection keyboard - English only"""
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    for it in d["ru" if lang == "ru" else "en"]:
-        kb.add(KeyboardButton(it))
+    kb.add(KeyboardButton("📊 Technical analysis"))
+    kb.add(KeyboardButton("📈 Indicators"))
     return kb
 
-def category_keyboard(lang):
-    """Клавиатура выбора категории с кнопкой "Назад" """
-    d = {"ru": ["💰 ACTIVE FIN", "⏱️ ACTIVE OTC"],
-         "en": ["💰 ACTIVE FIN", "⏱️ ACTIVE OTC"]}
-    back_text = "⬅️ Назад" if lang == "ru" else "⬅️ Back"
-    
+def category_keyboard(lang="en"):
+    """Asset category keyboard with Back button - English only"""
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    for it in d["ru" if lang == "ru" else "en"]:
-        kb.add(KeyboardButton(it))
-    kb.add(KeyboardButton(back_text))
+    kb.add(KeyboardButton("💰 ACTIVE FIN"))
+    kb.add(KeyboardButton("⏱️ ACTIVE OTC"))
+    kb.add(KeyboardButton("⬅️ Back"))
     return kb
 
 def pairs_keyboard(pairs, lang="en"):
-    """Клавиатура выбора валютной пары с кнопкой "Назад" """
-    back_text = "⬅️ Назад" if lang == "ru" else "⬅️ Back"
-    
+    """Currency pair keyboard with Back button - English only"""
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    # Add pairs
     for name in pairs.keys():
         kb.add(KeyboardButton(name))
-    kb.add(KeyboardButton(back_text))
+    
+    # Add Back button
+    kb.add(KeyboardButton("⬅️ Back"))
     return kb
 
-def timeframe_keyboard(lang, po_available=True):
-    """Клавиатура выбора таймфрейма с кнопкой "Назад" """
+def timeframe_keyboard(lang="en", po_available=True):
+    """Timeframe keyboard with Back button - English only"""
     timeframes = ["30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h"]
-    back_text = "⬅️ Назад" if lang == "ru" else "⬅️ Back"
     
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
     
-    # Добавляем кнопки таймфреймов по 3 в ряд
+    # Add timeframe buttons in rows of 3
     for i in range(0, len(timeframes), 3):
         row_buttons = []
         for j in range(3):
@@ -48,19 +42,17 @@ def timeframe_keyboard(lang, po_available=True):
                 row_buttons.append(KeyboardButton(timeframes[i + j]))
         kb.row(*row_buttons)
     
-    # Добавляем кнопку "Назад"
-    kb.add(KeyboardButton(back_text))
+    # Add Back button
+    kb.add(KeyboardButton("⬅️ Back"))
     return kb
 
 def restart_keyboard(lang="en"):
-    """Клавиатура с кнопкой "Начать заново" после получения прогноза"""
-    restart_text = "🔄 Новый прогноз" if lang == "ru" else "🔄 New forecast"
-    
+    """Keyboard with New forecast button after getting forecast - English only"""
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    kb.add(KeyboardButton(restart_text))
+    kb.add(KeyboardButton("🔄 New forecast"))
     kb.add(KeyboardButton("/start"))
     return kb
 
 def remove_keyboard():
-    """Удаление клавиатуры"""
+    """Remove keyboard"""
     return ReplyKeyboardRemove()
