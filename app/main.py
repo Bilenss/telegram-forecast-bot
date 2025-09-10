@@ -17,7 +17,7 @@ from .pairs import all_pairs, get_available_pairs, availability_checker, get_pai
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
 
-# Новый импорт
+# Новый импорт CompositeFetcher
 from .data_sources.fetchers import CompositeFetcher
 
 logger = setup(LOG_LEVEL)
@@ -26,7 +26,7 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
-# Создаём инстанс fetcher'а
+# Создаём единственный инстанс CompositeFetcher для всего приложения
 _fetcher = CompositeFetcher()
 
 
@@ -265,10 +265,11 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
 
     try:
-        # Заменённый вызов на CompositeFetcher
+        # Используем CompositeFetcher вместо прямого вызова скрапинга
         df = await _fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
         if df is None or df.empty:
-            raise RuntimeError("Failed to fetch any OHLC data from PocketOption")
+            logger.error("Failed to fetch any OHLC data from PocketOption")
+            return None
 
         try:
             from .utils.dataframe_fix import fix_ohlc_columns, validate_ohlc_data
