@@ -48,6 +48,11 @@ PO_ENTRY_URL        = _env_str("PO_ENTRY_URL", "")
 PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)
 PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", True)
 
+# Новые переменные (добавлены)
+PO_FETCH_ORDER      = _env_str("PO_FETCH_ORDER", "po,interceptor,ocr").split(",")
+PO_USE_INTERCEPTOR  = _env_bool("PO_USE_INTERCEPTOR", True)
+PO_USE_OCR          = _env_bool("PO_USE_OCR", False)
+
 def _default_entry_url():
     return PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
 
@@ -92,6 +97,9 @@ try:
         "PO_ENTRY_URL": _default_entry_url(),
         "PO_FAST_FAIL_SEC": PO_FAST_FAIL_SEC,
         "PO_STRICT_ONLY": PO_STRICT_ONLY,
+        "PO_FETCH_ORDER": PO_FETCH_ORDER,
+        "PO_USE_INTERCEPTOR": PO_USE_INTERCEPTOR,
+        "PO_USE_OCR": PO_USE_OCR,
         "ALPHAVANTAGE_KEY": _mask_secret(ALPHAVANTAGE_KEY, 4),
         "TELEGRAM_TOKEN": _mask_secret(TELEGRAM_TOKEN, 6),
         "LOG_LEVEL": LOG_LEVEL,
