@@ -26,35 +26,46 @@ cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
 
 def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
+    """Format forecast message - always in English"""
     tf_upper = timeframe.upper()
     
     if mode == "ind":
+        # For indicators
         message_parts = [
-            f"🎯 **ПРОГНОЗ на {tf_upper}**",
+            f"🎯 **FORECAST for {tf_upper}**",
             "",
-            f"💡 Рекомендация: **{action}**",
+            f"💡 Recommendation: **{action}**",
             "",
-            "📊 **Индикаторы:**",
+            "📊 **Indicators:**",
             f"• RSI: {data['RSI']:.1f}",
-            f"• EMA быстрая: {data['EMA_fast']:.5f}",
-            f"• EMA медленная: {data['EMA_slow']:.5f}", 
+            f"• EMA fast: {data['EMA_fast']:.5f}",
+            f"• EMA slow: {data['EMA_slow']:.5f}", 
             f"• MACD: {data['MACD']:.5f}",
-            f"• MACD сигнал: {data['MACD_signal']:.5f}"
+            f"• MACD signal: {data['MACD_signal']:.5f}"
         ]
     else:
+        # For technical analysis - improved format
         message_parts = [
-            f"🎯 **ПРОГНОЗ на {tf_upper}**",
+            f"🎯 **FORECAST for {tf_upper}**",
             "",
-            f"💡 Рекомендация: **{action}**",
+            f"💡 Recommendation: **{action}**",
             "",
-            f"📊 **Технический анализ:**",
-            f"• {'; '.join(notes) if notes else 'Анализ завершен'}"
+            "📊 **Technical Analysis:**"
         ]
+        
+        # Add each note as a bullet point
+        if notes:
+            for note in notes:
+                message_parts.append(f"• {note}")
+        else:
+            message_parts.append("• Market analysis completed")
     
     if notes and mode == "ind":
-        message_parts.extend(["", f"ℹ️ {'; '.join(notes)}"])
+        message_parts.extend(["", "ℹ️ **Additional Notes:**"])
+        for note in notes:
+            message_parts.append(f"• {note}")
     
-    message_parts.extend(["", "⏱ _Анализ выполнен на основе данных PocketOption_"])
+    message_parts.extend(["", "_Analysis based on market data patterns_"])
     
     return "\n".join(message_parts)
 
@@ -62,10 +73,10 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
     await state.finish()
-    await state.update_data(lang=DEFAULT_LANG)
+    await state.update_data(lang="en")  # Always English
     
-    welcome_text = "Hello! Choose analysis mode:" if DEFAULT_LANG == "en" else "Привет! Выберите режим анализа:"
-    await m.answer(welcome_text, reply_markup=mode_keyboard(DEFAULT_LANG))
+    welcome_text = "Hello! Choose analysis mode:"
+    await m.answer(welcome_text, reply_markup=mode_keyboard("en"))
     await ST.Mode.set()
 
 
@@ -73,22 +84,22 @@ async def cmd_start(m: types.Message, state: FSMContext):
 async def handle_back(m: types.Message, state: FSMContext):
     current_state = await state.get_state()
     data = await state.get_data()
-    lang = data.get("lang", DEFAULT_LANG)
+    lang = "en"  # Always English
     
     if current_state == "ForecastStates:Category":
-        welcome_text = "Choose analysis mode:" if lang == "en" else "Выберите режим анализа:"
+        welcome_text = "Choose analysis mode:"
         await m.answer(welcome_text, reply_markup=mode_keyboard(lang))
         await ST.Mode.set()
     
     elif current_state == "ForecastStates:Pair":
-        category_text = "Choose asset category:" if lang == "en" else "Выберите категорию актива:"
+        category_text = "Choose asset category:"
         await m.answer(category_text, reply_markup=category_keyboard(lang))
         await ST.Category.set()
     
     elif current_state == "ForecastStates:Timeframe":
         cat = data.get("category", "fin")
         pairs = await get_available_pairs(cat)
-        pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
+        pair_text = "Choose pair:"
         await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
         await ST.Pair.set()
     
@@ -96,7 +107,7 @@ async def handle_back(m: types.Message, state: FSMContext):
         await cmd_start(m, state)
 
 
-@dp.message_handler(lambda m: "🔄" in m.text or "New forecast" in m.text or "Новый прогноз" in m.text, state="*")
+@dp.message_handler(lambda m: "🔄" in m.text or "New forecast" in m.text, state="*")
 async def handle_restart(m: types.Message, state: FSMContext):
     await cmd_start(m, state)
 
@@ -104,12 +115,12 @@ async def handle_restart(m: types.Message, state: FSMContext):
 @dp.message_handler(state=ST.Mode)
 async def set_mode(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang", DEFAULT_LANG)
+    lang = "en"  # Always English
     
-    mode = "ta" if "Тех" in m.text or "Technical" in m.text else "ind"
+    mode = "ta" if "Technical" in m.text else "ind"
     await state.update_data(mode=mode)
     
-    category_text = "Choose asset category:" if lang == "en" else "Выберите категорию актива:"
+    category_text = "Choose asset category:"
     await m.answer(category_text, reply_markup=category_keyboard(lang))
     await ST.Category.set()
 
@@ -117,7 +128,7 @@ async def set_mode(m: types.Message, state: FSMContext):
 @dp.message_handler(state=ST.Category)
 async def set_category(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang", DEFAULT_LANG)
+    lang = "en"  # Always English
     
     if "⬅️" in m.text:
         await handle_back(m, state)
@@ -133,7 +144,7 @@ async def set_category(m: types.Message, state: FSMContext):
         await state.finish()
         return
     
-    pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
+    pair_text = "Choose pair:"
     await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
     await ST.Pair.set()
 
@@ -141,7 +152,7 @@ async def set_category(m: types.Message, state: FSMContext):
 @dp.message_handler(state=ST.Pair)
 async def set_pair(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang", DEFAULT_LANG)
+    lang = "en"  # Always English
     cat = data.get("category", "fin")
     
     if "⬅️" in m.text:
@@ -149,34 +160,30 @@ async def set_pair(m: types.Message, state: FSMContext):
         return
     
     if "(N/A)" in m.text:
-        na_text = "This pair is temporarily unavailable" if lang == "en" else "Эта пара временно недоступна"
-        await m.answer(f"⚠️ {na_text}")
+        await m.answer("⚠️ This pair is temporarily unavailable")
         
         pairs = await get_available_pairs(cat)
-        pair_text = "Choose another pair:" if lang == "en" else "Выберите другую пару:"
-        await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
+        await m.answer("Choose another pair:", reply_markup=pairs_keyboard(pairs, lang))
         return
     
     pair_info = get_pair_info(m.text)
     
     if not pair_info:
         pairs = await get_available_pairs(cat)
-        pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
-        await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
+        await m.answer("Choose pair:", reply_markup=pairs_keyboard(pairs, lang))
         return
     
     is_available = await availability_checker.is_available(m.text)
     
     if not is_available:
-        na_text = "This pair became unavailable" if lang == "en" else "Эта пара стала недоступна"
-        await m.answer(f"⚠️ {na_text}")
+        await m.answer("⚠️ This pair became unavailable")
         
         pairs = await get_available_pairs(cat)
         await m.answer("Choose another pair:", reply_markup=pairs_keyboard(pairs, lang))
         return
     
     await state.update_data(pair=m.text)
-    tf_text = "Choose timeframe:" if lang == "en" else "Выберите таймфрейм:"
+    tf_text = "Choose timeframe:"
     await m.answer(tf_text, reply_markup=timeframe_keyboard(lang, po_available=True))
     await ST.Timeframe.set()
 
@@ -184,20 +191,24 @@ async def set_pair(m: types.Message, state: FSMContext):
 @dp.message_handler(state=ST.Timeframe)
 async def set_timeframe(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang", DEFAULT_LANG)
+    lang = "en"  # Always English
     mode = data.get("mode", "ind")
     cat = data.get("category", "fin")
     pair_human = data.get("pair")
     tf = m.text.strip().lower()
+    
+    # Check for back button
+    if "⬅️" in m.text:
+        await handle_back(m, state)
+        return
 
     from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
     
     restart_kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    restart_text = "🔄 Новый прогноз" if lang == "ru" else "🔄 New forecast"
-    restart_kb.add(KeyboardButton(restart_text))
+    restart_kb.add(KeyboardButton("🔄 New forecast"))
     restart_kb.add(KeyboardButton("/start"))
     
-    processing_text = "⏳ Анализирую данные PocketOption..." if lang == "ru" else "⏳ Analyzing PocketOption data..."
+    processing_text = "⏳ Analyzing PocketOption data..."
     processing_msg = await m.answer(processing_text, reply_markup=ReplyKeyboardRemove())
 
     pairs = await get_available_pairs(cat)
@@ -244,7 +255,7 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error in analysis: {e}")
         await processing_msg.delete()
-        error_msg = f"❌ Ошибка анализа\n\nПричина: {str(e)}\n\nПопробуйте другую пару или таймфрейм"
+        error_msg = f"❌ Analysis error\n\nReason: {str(e)}\n\nTry another pair or timeframe"
         await m.answer(error_msg, reply_markup=restart_kb)
 
     if ENABLE_CHARTS and df is not None and len(df) > 0:
@@ -310,14 +321,14 @@ async def auto_update_availability():
 def main():
     print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
     print(f"PO_ENABLE_SCRAPE: {PO_ENABLE_SCRAPE}")
-    print(f"DEFAULT_LANG: {DEFAULT_LANG}")
+    print(f"DEFAULT_LANG: en")  # Always English
     print(f"LOG_LEVEL: {LOG_LEVEL}")
     
     if not TELEGRAM_TOKEN:
         raise SystemExit("TELEGRAM_TOKEN env var is required")
     
     logger.info("Starting Telegram bot...")
-    logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG={DEFAULT_LANG}")
+    logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG=en")
 
     loop = asyncio.get_event_loop()
     loop.create_task(auto_update_availability())
