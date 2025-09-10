@@ -13,7 +13,7 @@ from .states import ForecastStates as ST
 from .keyboards import mode_keyboard, category_keyboard, pairs_keyboard, timeframe_keyboard
 from .utils.cache import TTLCache
 from .utils.logging import setup
-from .pairs import all_pairs
+from .pairs import all_pairs, get_available_pairs, availability_checker, get_pair_info
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.pocketoption_scraper import fetch_po_ohlc_async
@@ -24,12 +24,11 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 
+
 def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
-    """Форматирование сообщения прогноза"""
     tf_upper = timeframe.upper()
     
     if mode == "ind":
-        # Для индикаторов
         message_parts = [
             f"🎯 **ПРОГНОЗ на {tf_upper}**",
             "",
@@ -43,7 +42,6 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             f"• MACD сигнал: {data['MACD_signal']:.5f}"
         ]
     else:
-        # Для технического анализа
         message_parts = [
             f"🎯 **ПРОГНОЗ на {tf_upper}**",
             "",
@@ -60,6 +58,7 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
     
     return "\n".join(message_parts)
 
+
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
     await state.finish()
@@ -69,41 +68,38 @@ async def cmd_start(m: types.Message, state: FSMContext):
     await m.answer(welcome_text, reply_markup=mode_keyboard(DEFAULT_LANG))
     await ST.Mode.set()
 
+
 @dp.message_handler(lambda m: "⬅️" in m.text, state="*")
 async def handle_back(m: types.Message, state: FSMContext):
-    """Обработка кнопки Назад"""
     current_state = await state.get_state()
     data = await state.get_data()
     lang = data.get("lang", DEFAULT_LANG)
     
     if current_state == "ForecastStates:Category":
-        # Возврат к выбору режима
         welcome_text = "Choose analysis mode:" if lang == "en" else "Выберите режим анализа:"
         await m.answer(welcome_text, reply_markup=mode_keyboard(lang))
         await ST.Mode.set()
     
     elif current_state == "ForecastStates:Pair":
-        # Возврат к выбору категории
         category_text = "Choose asset category:" if lang == "en" else "Выберите категорию актива:"
         await m.answer(category_text, reply_markup=category_keyboard(lang))
         await ST.Category.set()
     
     elif current_state == "ForecastStates:Timeframe":
-        # Возврат к выбору пары
         cat = data.get("category", "fin")
-        pairs = all_pairs(cat)
+        pairs = await get_available_pairs(cat)
         pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
         await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
         await ST.Pair.set()
     
     else:
-        # По умолчанию возврат к старту
         await cmd_start(m, state)
+
 
 @dp.message_handler(lambda m: "🔄" in m.text or "New forecast" in m.text or "Новый прогноз" in m.text, state="*")
 async def handle_restart(m: types.Message, state: FSMContext):
-    """Обработка кнопки Новый прогноз"""
     await cmd_start(m, state)
+
 
 @dp.message_handler(state=ST.Mode)
 async def set_mode(m: types.Message, state: FSMContext):
@@ -117,35 +113,73 @@ async def set_mode(m: types.Message, state: FSMContext):
     await m.answer(category_text, reply_markup=category_keyboard(lang))
     await ST.Category.set()
 
+
 @dp.message_handler(state=ST.Category)
 async def set_category(m: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang", DEFAULT_LANG)
     
+    if "⬅️" in m.text:
+        await handle_back(m, state)
+        return
+    
     cat = "fin" if "FIN" in m.text else "otc"
     await state.update_data(category=cat)
     
-    pairs = all_pairs(cat)
+    pairs = await get_available_pairs(cat)
+    
+    if not pairs:
+        await m.answer("No pairs available at the moment. Please try later.")
+        await state.finish()
+        return
+    
     pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
     await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
     await ST.Pair.set()
+
 
 @dp.message_handler(state=ST.Pair)
 async def set_pair(m: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang", DEFAULT_LANG)
     cat = data.get("category", "fin")
-    pairs = all_pairs(cat)
     
-    if m.text not in pairs:
+    if "⬅️" in m.text:
+        await handle_back(m, state)
+        return
+    
+    if "(N/A)" in m.text:
+        na_text = "This pair is temporarily unavailable" if lang == "en" else "Эта пара временно недоступна"
+        await m.answer(f"⚠️ {na_text}")
+        
+        pairs = await get_available_pairs(cat)
+        pair_text = "Choose another pair:" if lang == "en" else "Выберите другую пару:"
+        await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
+        return
+    
+    pair_info = get_pair_info(m.text)
+    
+    if not pair_info:
+        pairs = await get_available_pairs(cat)
         pair_text = "Choose pair:" if lang == "en" else "Выберите валютную пару:"
         await m.answer(pair_text, reply_markup=pairs_keyboard(pairs, lang))
         return
+    
+    is_available = await availability_checker.is_available(m.text)
+    
+    if not is_available:
+        na_text = "This pair became unavailable" if lang == "en" else "Эта пара стала недоступна"
+        await m.answer(f"⚠️ {na_text}")
         
+        pairs = await get_available_pairs(cat)
+        await m.answer("Choose another pair:", reply_markup=pairs_keyboard(pairs, lang))
+        return
+    
     await state.update_data(pair=m.text)
     tf_text = "Choose timeframe:" if lang == "en" else "Выберите таймфрейм:"
     await m.answer(tf_text, reply_markup=timeframe_keyboard(lang, po_available=True))
     await ST.Timeframe.set()
+
 
 @dp.message_handler(state=ST.Timeframe)
 async def set_timeframe(m: types.Message, state: FSMContext):
@@ -156,7 +190,6 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     pair_human = data.get("pair")
     tf = m.text.strip().lower()
 
-    # Создаем клавиатуру с кнопкой "Новый прогноз"
     from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
     
     restart_kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -164,12 +197,11 @@ async def set_timeframe(m: types.Message, state: FSMContext):
     restart_kb.add(KeyboardButton(restart_text))
     restart_kb.add(KeyboardButton("/start"))
     
-    # Убираем старую клавиатуру и показываем сообщение о загрузке
     processing_text = "⏳ Анализирую данные PocketOption..." if lang == "ru" else "⏳ Analyzing PocketOption data..."
     processing_msg = await m.answer(processing_text, reply_markup=ReplyKeyboardRemove())
 
-    pairs = all_pairs(cat)
-    pair_info = pairs.get(pair_human)
+    pairs = await get_available_pairs(cat)
+    pair_info = get_pair_info(pair_human)
     
     if not pair_info:
         await processing_msg.delete()
@@ -179,8 +211,6 @@ async def set_timeframe(m: types.Message, state: FSMContext):
 
     try:
         logger.info(f"Loading OHLC data for {pair_human} ({pair_info}) on {tf}")
-        
-        # Кешируем данные
         cache_key = f"{pair_info['po']}_{tf}_{cat}"
         df = cache.get(cache_key)
         
@@ -197,7 +227,6 @@ async def set_timeframe(m: types.Message, state: FSMContext):
             
         logger.info(f"Got {len(df)} bars for analysis")
         
-        # Используем стандартный анализ (пока без fast_prediction)
         if mode == "ind":
             logger.info("Computing indicators...")
             ind = compute_indicators(df)
@@ -208,10 +237,7 @@ async def set_timeframe(m: types.Message, state: FSMContext):
             action, notes = simple_ta_signal(df)
             result_message = format_forecast_message(mode, tf, action, {}, notes, lang)
         
-        # Удаляем сообщение о загрузке
         await processing_msg.delete()
-        
-        # Отправляем прогноз с кнопкой "Новый прогноз"
         await m.answer(result_message, parse_mode='Markdown', reply_markup=restart_kb)
         logger.info(f"Sent forecast: {action} for {tf}")
         
@@ -221,7 +247,6 @@ async def set_timeframe(m: types.Message, state: FSMContext):
         error_msg = f"❌ Ошибка анализа\n\nПричина: {str(e)}\n\nПопробуйте другую пару или таймфрейм"
         await m.answer(error_msg, reply_markup=restart_kb)
 
-    # График если включен
     if ENABLE_CHARTS and df is not None and len(df) > 0:
         try:
             from .utils.charts import plot_candles
@@ -237,8 +262,8 @@ async def set_timeframe(m: types.Message, state: FSMContext):
 
     await state.finish()
 
+
 async def load_ohlc(pair_info: dict, timeframe: str, category: str):
-    """Загрузка данных OHLC с обработкой ошибок"""
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
     
@@ -254,14 +279,12 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
             logger.warning(f"Empty dataframe received for {pair_info['po']}")
             return None
         
-        # Исправляем названия колонок если нужно
         try:
             from .utils.dataframe_fix import fix_ohlc_columns, validate_ohlc_data
             df = fix_ohlc_columns(df)
             if not validate_ohlc_data(df):
                 logger.warning("OHLC data validation failed, but continuing")
         except ImportError:
-            # Если модуль не найден, пробуем простое переименование
             if 'close' in df.columns:
                 df.columns = ['Open', 'High', 'Low', 'Close']
         
@@ -271,6 +294,18 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     except Exception as e:
         logger.error(f"Failed to fetch OHLC: {e}")
         raise
+
+
+async def auto_update_availability():
+    while True:
+        try:
+            await availability_checker.update_availability()
+            logger.info("Pairs availability updated")
+        except Exception as e:
+            logger.error(f"Failed to update availability: {e}")
+        
+        await asyncio.sleep(300)
+
 
 def main():
     print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
@@ -283,12 +318,16 @@ def main():
     
     logger.info("Starting Telegram bot...")
     logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG={DEFAULT_LANG}")
-    
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(auto_update_availability())
+
     try:
         executor.start_polling(dp, skip_updates=True)
     except Exception as e:
         logger.error(f"Bot error: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()
