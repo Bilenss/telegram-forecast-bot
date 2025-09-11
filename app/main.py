@@ -16,8 +16,6 @@ from .utils.logging import setup
 from .pairs import all_pairs, get_available_pairs, availability_checker, get_pair_info
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
-
-# Новый импорт CompositeFetcher
 from .data_sources.fetchers import CompositeFetcher
 
 logger = setup(LOG_LEVEL)
@@ -25,17 +23,13 @@ logger = setup(LOG_LEVEL)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
-
-# Создаём единственный инстанс CompositeFetcher для всего приложения
 _fetcher = CompositeFetcher()
 
 
 def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
-    """Format forecast message - always in English"""
     tf_upper = timeframe.upper()
 
     if mode == "ind":
-        # For indicators
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -49,7 +43,6 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             f"• MACD signal: {data['MACD_signal']:.5f}"
         ]
     else:
-        # For technical analysis
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -57,7 +50,6 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             "",
             "📊 **Technical Analysis:**"
         ]
-
         if notes:
             for note in notes:
                 message_parts.append(f"• {note}")
@@ -70,17 +62,14 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             message_parts.append(f"• {note}")
 
     message_parts.extend(["", "_Analysis based on market data patterns_"])
-
     return "\n".join(message_parts)
 
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: types.Message, state: FSMContext):
     await state.finish()
-    await state.update_data(lang="en")  # Always English
-
-    welcome_text = "Hello! Choose analysis mode:"
-    await m.answer(welcome_text, reply_markup=mode_keyboard("en"))
+    await state.update_data(lang="en")
+    await m.answer("Hello! Choose analysis mode:", reply_markup=mode_keyboard("en"))
     await ST.Mode.set()
 
 
@@ -119,7 +108,6 @@ async def handle_restart(m: types.Message, state: FSMContext):
 async def set_mode(m: types.Message, state: FSMContext):
     mode = "ta" if "Technical" in m.text else "ind"
     await state.update_data(mode=mode)
-
     await m.answer("Choose asset category:", reply_markup=category_keyboard("en"))
     await ST.Category.set()
 
@@ -134,7 +122,6 @@ async def set_category(m: types.Message, state: FSMContext):
     await state.update_data(category=cat)
 
     pairs = await get_available_pairs(cat)
-
     if not pairs:
         await m.answer("No pairs available at the moment. Please try later.")
         await state.finish()
@@ -170,7 +157,9 @@ async def set_pair(m: types.Message, state: FSMContext):
         return
 
     await state.update_data(pair=m.text)
-    await m.answer("Choose timeframe:", reply_markup=timeframe_keyboard("en", po_available=True))
+    data = await state.get_data()
+    cat = data.get("category", "fin")  # 🟢 Получаем category
+    await m.answer("Choose timeframe:", reply_markup=timeframe_keyboard("en", category=cat, po_available=True))  # ✅ Обновлённый вызов
     await ST.Timeframe.set()
 
 
@@ -265,7 +254,6 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
 
     try:
-        # Используем CompositeFetcher вместо прямого вызова скрапинга
         df = await _fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
         if df is None or df.empty:
             logger.error("Failed to fetch any OHLC data from PocketOption")
