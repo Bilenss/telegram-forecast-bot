@@ -31,18 +31,18 @@ def pairs_keyboard(pairs: dict, lang: str = "en") -> ReplyKeyboardMarkup:
     kb.add(KeyboardButton("⬅️ Back"))
     return kb
 
-def timeframe_keyboard(lang: str = "en", category: str = "", po_available: bool = True) -> ReplyKeyboardMarkup:
+def timeframe_keyboard(lang: str, category: str, po_available: bool = True) -> ReplyKeyboardMarkup:
     """
-    Timeframe selection keyboard with 3-column layout.
-    Excludes "30s" if category is 'fin' (i.e., for PocketOption).
+    Возвращает ReplyKeyboard с таймфреймами.
+    Для категории 'fin' убираем 30s, добавляем 4h.
     """
-    all_timeframes = ["30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h"]
+    all_tfs = ["30s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h"]
     
     if category.lower() == "fin":
-        all_timeframes = [tf for tf in all_timeframes if tf != "30s"]
+        all_tfs = [tf for tf in all_tfs if tf != "30s"]
 
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    kb.add(*[KeyboardButton(tf) for tf in all_timeframes])
+    kb.add(*[KeyboardButton(tf) for tf in all_tfs])
     kb.add(KeyboardButton("⬅️ Back"))
     return kb
 
