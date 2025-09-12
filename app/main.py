@@ -10,7 +10,13 @@ from aiogram import Bot, Dispatcher, executor
 from aiogram.types import Message, CallbackQuery, InputFile
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from loguru import logger
-from aioprometheus import Service, Counter, Histogram
+
+# пытаемся импортировать aioprometheus
+try:
+    from aioprometheus import Service, Counter, Histogram
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
 
 from app.config import (
     TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS,
@@ -26,7 +32,9 @@ from app.analysis.decision import signal_from_indicators, simple_ta_signal
 from app.data_sources.fetchers import CompositeFetcher
 from app.utils.dataframe_fix import fix_ohlc_columns, validate_ohlc_data
 
-# Logger, bot, dispatcher, cache, fetcher, metrics
+# ------------------------------------------------------------------------------
+# ЛОГ / БОТ / DP / КЭШ / FETCHER / METРИКИ
+# ------------------------------------------------------------------------------
 logger = setup(LOG_LEVEL)
 
 bot     = Bot(token=TELEGRAM_TOKEN)
@@ -34,36 +42,20 @@ dp      = Dispatcher(bot, storage=MemoryStorage())
 cache   = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 fetcher = CompositeFetcher()
 
-REQUESTS      = Counter("bot_requests_total", "Total bot requests")
-FETCH_LATENCY = Histogram("ohlc_fetch_latency_seconds", "OHLC fetch latency")
+if PROMETHEUS_AVAILABLE:
+    REQUESTS      = Counter("bot_requests_total", "Total bot requests")
+    FETCH_LATENCY = Histogram("ohlc_fetch_latency_seconds", "OHLC fetch latency")
+else:
+    REQUESTS = FETCH_LATENCY = None
 
-# In-memory per-user state
-class InMemoryStateStorage:
-    def __init__(self) -> None:
-        self._data: Dict[int, Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
-    async def get(self, user_id: int) -> Dict[str, Any]:
-        async with self._lock:
-            return dict(self._data.get(user_id, {}))
-    async def set(self, user_id: int, value: Dict[str, Any]) -> None:
-        async with self._lock:
-            self._data[user_id] = dict(value)
-    async def update(self, user_id: int, **kwargs) -> None:
-        async with self._lock:
-            cur = self._data.get(user_id, {})
-            cur.update(kwargs)
-            self._data[user_id] = cur
-    async def clear(self, user_id: int) -> None:
-        async with self._lock:
-            self._data.pop(user_id, None)
+# ------------------------------------------------------------------------------
+# ВСПОМОГАТЕЛИ: load_ohlc, format_forecast_message, run_analysis
+# ------------------------------------------------------------------------------
 
-state_storage = InMemoryStateStorage()
-
-# Load OHLC
 async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     if not PO_ENABLE_SCRAPE:
         raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
-    otc = category == "otc"
+    otc = (category == "otc")
     logger.info(f"Fetching {pair_info['po']} data (otc={otc}, tf={timeframe})")
 
     df = await fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
@@ -78,29 +70,39 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     logger.info(f"DataFrame columns: {df.columns.tolist()}")
     return df
 
-# Format message
 def format_forecast_message(
     mode: str, timeframe: str, action: str,
     data: dict, notes: Optional[list]=None
 ) -> str:
-    upper_tf = timeframe.upper()
-    lines = [f"🎯 **FORECAST for {upper_tf}**", "", f"💡 Recommendation: **{action}**", ""]
+    tf_up = timeframe.upper()
+    lines = [
+        f"🎯 **FORECAST for {tf_up}**", "",
+        f"💡 Recommendation: **{action}**", ""
+    ]
     if mode == "ind":
-        lines += ["📊 **Indicators:**",
-                  f"• RSI: {data.get('RSI',0):.1f}",
-                  f"• EMA fast: {data.get('EMA_fast',0):.5f}",
-                  f"• EMA slow: {data.get('EMA_slow',0):.5f}",
-                  f"• MACD: {data.get('MACD',0):.5f}",
-                  f"• MACD signal: {data.get('MACD_signal',0):.5f}"]
+        lines += [
+            "📊 **Indicators:**",
+            f"• RSI: {data.get('RSI',0):.1f}",
+            f"• EMA fast: {data.get('EMA_fast',0):.5f}",
+            f"• EMA slow: {data.get('EMA_slow',0):.5f}",
+            f"• MACD: {data.get('MACD',0):.5f}",
+            f"• MACD signal: {data.get('MACD_signal',0):.5f}"
+        ]
         if notes:
             lines += ["", "ℹ️ **Additional Notes:**"] + [f"• {n}" for n in notes]
     else:
-        lines += ["📊 **Technical Analysis:**"] + ([f"• {n}" for n in notes] if notes else ["• Market analysis completed"])
+        lines.append("📊 **Technical Analysis:**")
+        if notes:
+            lines += [f"• {n}" for n in notes]
+        else:
+            lines.append("• Market analysis completed")
+
     lines += ["", "_Analysis based on market data patterns_"]
     return "\n".join(lines)
 
-# Run indicators or TA
-async def run_analysis(df, timeframe: str, mode: str) -> Tuple[str, Optional[str]]:
+async def run_analysis(
+    df, timeframe: str, mode: str
+) -> Tuple[str, Optional[str]]:
     if not df or df.empty:
         raise RuntimeError("No data to analyze")
     if mode == "ind":
@@ -112,25 +114,34 @@ async def run_analysis(df, timeframe: str, mode: str) -> Tuple[str, Optional[str
         text = format_forecast_message("ta", timeframe, action, {}, notes)
     return text, action
 
-# Metrics server
+# ------------------------------------------------------------------------------
+# METRICS SERVER
+# ------------------------------------------------------------------------------
 async def start_metrics_server():
+    if not PROMETHEUS_AVAILABLE:
+        logger.warning("METRICS_ENABLED=True but aioprometheus is not installed; skipping metrics server")
+        return
     svc = Service()
     svc.register(REQUESTS)
     svc.register(FETCH_LATENCY)
     await svc.start(addr="0.0.0.0", port=METRICS_PORT)
-    logger.info(f"Metrics on :{METRICS_PORT}/metrics")
+    logger.info(f"Metrics exposed on :{METRICS_PORT}/metrics")
 
-# Periodic availability update
+# ------------------------------------------------------------------------------
+# PERIODIC AVAILABILITY UPDATES
+# ------------------------------------------------------------------------------
 async def auto_update_availability():
     while True:
         try:
             await availability_checker.update_availability()
             logger.info("Availability updated")
         except Exception as e:
-            logger.error(f"Update error: {e}")
+            logger.error(f"Availability update error: {e}")
         await asyncio.sleep(300)
 
-# Handlers
+# ------------------------------------------------------------------------------
+# HANDLERS
+# ------------------------------------------------------------------------------
 @dp.message_handler(commands=["start"])
 async def cmd_start(m: Message):
     await state_storage.clear(m.from_user.id)
@@ -195,16 +206,20 @@ async def cb_timeframe(cq: CallbackQuery):
     await state_storage.update(uid, timeframe=tf)
     await cq.message.edit_text("⏳ Analyzing…")
 
-    key = f"{pair_code}_{tf}_{category}"
-    df = cache.get(key)
+    cache_key = f"{pair_code}_{tf}_{category}"
+    df = cache.get(cache_key)
+
     try:
         if df is None:
-            REQUESTS.inc({"type":"ohlc"})
+            if PROMETHEUS_AVAILABLE:
+                REQUESTS.inc({"type":"ohlc"})
             start = time.time()
             df = await load_ohlc(get_pair_info(pair_code), tf, category)
-            FETCH_LATENCY.observe({"type":"ohlc"}, time.time()-start)
+            if PROMETHEUS_AVAILABLE:
+                FETCH_LATENCY.observe({"type":"ohlc"}, time.time() - start)
             if df:
-                cache.set(key, df)
+                cache.set(cache_key, df)
+
         if not df or df.empty:
             raise RuntimeError("Empty data")
 
@@ -224,15 +239,18 @@ async def cb_timeframe(cq: CallbackQuery):
 
     await state_storage.clear(uid)
 
-
-# Entrypoint
+# ------------------------------------------------------------------------------
+# ENTRYPOINT
+# ------------------------------------------------------------------------------
 def main():
     if not TELEGRAM_TOKEN:
         raise SystemExit("TELEGRAM_TOKEN is required")
+
     loop = asyncio.get_event_loop()
     loop.create_task(auto_update_availability())
     if METRICS_ENABLED:
         loop.create_task(start_metrics_server())
+
     executor.start_polling(dp, skip_updates=True)
 
 if __name__ == "__main__":
