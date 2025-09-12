@@ -27,6 +27,7 @@ def pairs_kb(pairs: dict) -> InlineKeyboardMarkup:
         cb = f"pair:{info['po']}"
         kb.insert(InlineKeyboardButton(display_name, callback_data=cb))
 
+    # «Назад» ведёт к выбору категории
     kb.add(InlineKeyboardButton("⬅️ Back", callback_data="back:category"))
     return kb
 
@@ -37,11 +38,12 @@ def timeframe_kb(category: str) -> InlineKeyboardMarkup:
     """
     all_tfs = ["30s","1m","2m","3m","5m","10m","15m","30m","1h","4h"]
     if category == "fin":
-        all_tfs = [tf for tf in all_tfs if tf != "30s"]
+        all_tfs.remove("30s")
 
     kb = InlineKeyboardMarkup(row_width=3)
     for tf in all_tfs:
         kb.insert(InlineKeyboardButton(tf, callback_data=f"timeframe:{tf}"))
 
+    # «Назад» ведёт к выбору пары
     kb.add(InlineKeyboardButton("⬅️ Back", callback_data="back:pair"))
     return kb
