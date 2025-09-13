@@ -1,20 +1,17 @@
 # app/keyboards_inline.py
 # -*- coding: utf-8 -*-
 
-from typing import Iterable, Sequence
+from typing import Sequence, Iterable
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
 
-
 def get_mode_keyboard() -> InlineKeyboardMarkup:
-    """
-    Two buttons: Indicators (ind) and Technical analysis (ta)
-    """
     kb = InlineKeyboardBuilder()
-    kb.button(text="Indicators", callback_data="ind")
-    kb.button(text="Technical", callback_data="ta")
-    kb.adjust(2)
+    kb.button(text="Analysis", callback_data="analysis")
+    kb.adjust(1)
     return kb.as_markup()
+
+# всё остальное оставляем без изменений (категории, пары, таймфреймы, рестарт)
 
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
