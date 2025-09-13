@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
