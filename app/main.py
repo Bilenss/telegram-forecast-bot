@@ -1,8 +1,4 @@
-Вот полный обновлённый код. Пожалуйста, скопируй только содержимое, без строк с ``` в начале и конце.
-
-```python
-# app/main.py
-
+# ===== BEGIN app/main.py =====
 import asyncio
 import time
 from typing import Optional
@@ -320,7 +316,7 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext):
             CACHE_HITS.inc()
             logger.info(f"Using cached data for {cache_key}")
 
-        if df is None or df.empty:
+        if df is None or getattr(df, "empty", False):
             raise RuntimeError("No data received from PocketOption")
 
         logger.info(f"Got {len(df)} bars for analysis")
@@ -346,7 +342,7 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext):
         )
         logger.info(f"Sent forecast: {action} for {tf}")
 
-        if ENABLE_CHARTS and df is not None and not df.empty:
+        if ENABLE_CHARTS and df is not None and not getattr(df, "empty", False):
             try:
                 from .utils.charts import plot_candles
                 import os
@@ -417,4 +413,11 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
+# ===== END app/main.py =====
+
+Готово. После замены файла:
+- git add app/main.py
+- git commit -m "Fix: clean main.py and migrate to aiogram 3.x"
+- git push
+
+Если снова будут ошибки — пришли логи целиком, разберём по месту.
