@@ -39,10 +39,16 @@ from .data_sources.fetchers import CompositeFetcher
 logger = setup(LOG_LEVEL)
 
 # Prometheus metrics
-REQUEST_COUNT = Counter("bot_requests_total", "Total number of requests", ["method", "status"])
-RESPONSE_TIME = Histogram("bot_response_duration_seconds", "Response time in seconds", ["method"])
+REQUEST_COUNT = Counter(
+    "bot_requests_total", "Total number of requests", ["method", "status"]
+)
+RESPONSE_TIME = Histogram(
+    "bot_response_duration_seconds", "Response time in seconds", ["method"]
+)
 ACTIVE_USERS = Gauge("bot_active_users", "Number of active users")
-FORECAST_COUNT = Counter("bot_forecasts_total", "Total number of forecasts", ["pair", "timeframe", "action"])
+FORECAST_COUNT = Counter(
+    "bot_forecasts_total", "Total number of forecasts", ["pair", "timeframe", "action"]
+)
 ERROR_COUNT = Counter("bot_errors_total", "Total number of errors", ["error_type"])
 CACHE_HITS = Counter("bot_cache_hits_total", "Total number of cache hits")
 CACHE_MISSES = Counter("bot_cache_misses_total", "Total number of cache misses")
@@ -62,9 +68,9 @@ def track_time(method_name: str):
                 result = await func(*args, **kwargs)
                 REQUEST_COUNT.labels(method=method_name, status="success").inc()
                 return result
-            except Exception as e:
+            except Exception:
                 REQUEST_COUNT.labels(method=method_name, status="error").inc()
-                ERROR_COUNT.labels(error_type=type(e).__name__).inc()
+                ERROR_COUNT.labels(error_type=type(_).__name__).inc()
                 logger.exception(f"{method_name} error")
                 raise
             finally:
@@ -105,9 +111,11 @@ def format_forecast_message(
             parts.extend([f"• {n}" for n in notes])
         else:
             parts.append("• Market analysis completed")
+
     if notes and mode == "ind":
         parts.extend(["", "ℹ️ Additional Notes:"])
         parts.extend([f"• {n}" for n in notes])
+
     parts.append("")
     parts.append("_Analysis based on market data patterns_")
     return "\n".join(parts)
@@ -138,7 +146,7 @@ async def set_category(callback: CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         return await cmd_start(callback.message, state)
 
-    cat = callback.data  # "fin" | "otc"
+    cat = callback.data
     # выходные для fin
     weekday = datetime.datetime.utcnow().weekday()  # Mon=0 … Sun=6
     if cat == "fin" and weekday in (5, 6):
@@ -202,19 +210,21 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
     pair_human = data.get("pair")
     tf = callback.data
 
-    processing = await callback.message.answer("⏳ Analyzing PocketOption data...")
+    processing_msg = await callback.message.answer("⏳ Analyzing PocketOption data...")
     try:
         cache_key = f"{get_pair_info(pair_human)['po']}_{tf}_{cat}"
         df = cache.get(cache_key)
         if df is None:
             CACHE_MISSES.inc()
-            df = await _fetcher.fetch(get_pair_info(pair_human)["po"], timeframe=tf, otc=(cat == "otc"))
-            if df and len(df) > 0:
+            df = await _fetcher.fetch(
+                get_pair_info(pair_human)["po"], timeframe=tf, otc=(cat == "otc")
+            )
+            if df is not None and not df.empty:
                 cache.set(cache_key, df)
         else:
             CACHE_HITS.inc()
 
-        if not df or df.empty:
+        if df is None or df.empty:
             raise RuntimeError("No data received from PocketOption")
 
         if mode == "ind":
@@ -226,11 +236,11 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
             text = format_forecast_message(mode, tf, action, {}, notes)
 
         FORECAST_COUNT.labels(pair=pair_human, timeframe=tf, action=action).inc()
-        await processing.edit_text(text, reply_markup=get_restart_keyboard())
+        await processing_msg.edit_text(text, reply_markup=get_restart_keyboard())
 
     except Exception as e:
         ERROR_COUNT.labels(error_type="analysis_error").inc()
-        await processing.edit_text(
+        await processing_msg.edit_text(
             f"❌ Analysis error\n\nReason: {e}\nTry another pair or timeframe",
             reply_markup=get_restart_keyboard()
         )
