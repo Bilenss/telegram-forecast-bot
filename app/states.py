@@ -1,8 +1,8 @@
 # app/states.py
-from aiogram.dispatcher.filters.state import StatesGroup, State
+from aiogram.fsm.state import State, StatesGroup
 
 class ForecastStates(StatesGroup):
-    # Убрали Language state - язык устанавливается автоматически
+    # Убрали Language state — язык устанавливается автоматически
     Mode = State()         # indicators | ta
     Category = State()     # fin | otc
     Pair = State()         # EUR/USD ...
