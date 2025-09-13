@@ -116,7 +116,7 @@ def format_forecast_message(
 
 @dp.message(Command("start"))
 @track_time("start_command")
-async def cmd_start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext, **kwargs):
     await state.clear()
     await state.update_data(lang="en")
     active_users.add(message.from_user.id)
@@ -126,7 +126,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 
 @dp.callback_query(F.data == "back")
-async def handle_back(callback: CallbackQuery, state: FSMContext):
+async def handle_back(callback: CallbackQuery, state: FSMContext, **kwargs):
     current = await state.get_state()
     data = await state.get_data()
     if current == ForecastStates.Category.state:
@@ -148,7 +148,7 @@ async def handle_back(callback: CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(F.data == "restart")
-async def handle_restart(callback: CallbackQuery, state: FSMContext):
+async def handle_restart(callback: CallbackQuery, state: FSMContext, **kwargs):
     await state.clear()
     await state.update_data(lang="en")
     await callback.message.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
@@ -158,7 +158,7 @@ async def handle_restart(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(StateFilter(ForecastStates.Mode))
 @track_time("mode_selection")
-async def set_mode(callback: CallbackQuery, state: FSMContext):
+async def set_mode(callback: CallbackQuery, state: FSMContext, **kwargs):
     await state.update_data(mode=callback.data)
     await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
     await state.set_state(ForecastStates.Category)
@@ -167,7 +167,7 @@ async def set_mode(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(StateFilter(ForecastStates.Category))
 @track_time("category_selection")
-async def set_category(callback: CallbackQuery, state: FSMContext):
+async def set_category(callback: CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -187,7 +187,7 @@ async def set_category(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(StateFilter(ForecastStates.Pair))
 @track_time("pair_selection")
-async def set_pair(callback: CallbackQuery, state: FSMContext):
+async def set_pair(callback: CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -217,7 +217,7 @@ async def set_pair(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(StateFilter(ForecastStates.Timeframe))
 @track_time("forecast_generation")
-async def set_timeframe(callback: CallbackQuery, state: FSMContext):
+async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
