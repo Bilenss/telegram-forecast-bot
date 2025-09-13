@@ -70,7 +70,6 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
     tf_upper = timeframe.upper()
 
     if mode == "ind":
-        # For indicators
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -84,7 +83,6 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             f"• MACD signal: {data['MACD_signal']:.5f}"
         ]
     else:
-        # For technical analysis
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -111,11 +109,10 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
 
 @dp.message_handler(commands=["start"])
 @track_time("start_command")
-async def cmd_start(m: types.Message, state: FSMContext):
+async def cmd_start(m: types.Message, state: FSMContext, **kwargs):
     await state.finish()
     await state.update_data(lang="en")  # Always English
-    
-    # Track active user
+
     active_users.add(m.from_user.id)
     ACTIVE_USERS.set(len(active_users))
 
@@ -160,7 +157,6 @@ async def handle_restart(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def cmd_start_inline(m: types.Message, state: FSMContext):
-    """Start command for inline mode"""
     await state.finish()
     await state.update_data(lang="en")
     await m.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
@@ -170,9 +166,9 @@ async def cmd_start_inline(m: types.Message, state: FSMContext):
 @dp.callback_query_handler(state=ST.Mode)
 @track_time("mode_selection")
 async def set_mode(callback: types.CallbackQuery, state: FSMContext):
-    mode = callback.data  # "ta" or "ind"
+    mode = callback.data
     await state.update_data(mode=mode)
-    
+
     await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
     await ST.Category.set()
     await callback.answer()
@@ -185,14 +181,14 @@ async def set_category(callback: types.CallbackQuery, state: FSMContext):
         await handle_back(callback, state)
         return
 
-    cat = callback.data  # "fin" or "otc"
+    cat = callback.data
     await state.update_data(category=cat)
 
     pairs = await get_available_pairs(cat)
 
     if not pairs:
         await callback.message.edit_text("No pairs available at the moment. Please try later.",
-                                        reply_markup=get_restart_keyboard())
+                                         reply_markup=get_restart_keyboard())
         await state.finish()
         await callback.answer()
         return
@@ -210,7 +206,7 @@ async def set_pair(callback: types.CallbackQuery, state: FSMContext):
         return
 
     pair_name = callback.data
-    
+
     if "(N/A)" in pair_name:
         await callback.answer("⚠️ This pair is temporarily unavailable", show_alert=True)
         pairs = await get_available_pairs("fin")
@@ -248,17 +244,16 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext):
     mode = data.get("mode", "ind")
     cat = data.get("category", "fin")
     pair_human = data.get("pair")
-    tf = callback.data  # Timeframe like "1m", "5m", etc.
+    tf = callback.data
 
     await callback.answer("⏳ Analyzing...")
-    
-    # Send processing message
+
     processing_msg = await callback.message.edit_text("⏳ Analyzing PocketOption data...")
 
     pair_info = get_pair_info(pair_human)
     if not pair_info:
         await processing_msg.edit_text(f"Error: Invalid pair {pair_human}",
-                                      reply_markup=get_restart_keyboard())
+                                       reply_markup=get_restart_keyboard())
         await state.finish()
         return
 
@@ -292,14 +287,12 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext):
             action, notes = simple_ta_signal(df)
             result_message = format_forecast_message(mode, tf, action, {}, notes)
 
-        # Track forecast
         FORECAST_COUNT.labels(pair=pair_human, timeframe=tf, action=action).inc()
 
         await processing_msg.edit_text(result_message, parse_mode='Markdown',
-                                     reply_markup=get_restart_keyboard())
+                                       reply_markup=get_restart_keyboard())
         logger.info(f"Sent forecast: {action} for {tf}")
 
-        # Send chart if enabled
         if ENABLE_CHARTS and df is not None and len(df) > 0:
             try:
                 from .utils.charts import plot_candles
@@ -335,7 +328,6 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
 
     try:
-        # Используем CompositeFetcher вместо прямого вызова скрапинга
         df = await _fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
         if df is None or df.empty:
             logger.error("Failed to fetch any OHLC data from PocketOption")
@@ -369,17 +361,15 @@ async def auto_update_availability():
         await asyncio.sleep(300)
 
 
-# Prometheus metrics endpoint
 async def metrics_handler(request):
     metrics = generate_latest()
     return web.Response(body=metrics, content_type="text/plain")
 
 
 async def start_metrics_server():
-    """Start HTTP server for Prometheus metrics"""
     app = web.Application()
     app.router.add_get('/metrics', metrics_handler)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8080)
@@ -400,11 +390,7 @@ def main():
     logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG=en")
 
     loop = asyncio.get_event_loop()
-    
-    # Start metrics server
     loop.create_task(start_metrics_server())
-    
-    # Start availability updater
     loop.create_task(auto_update_availability())
 
     try:
