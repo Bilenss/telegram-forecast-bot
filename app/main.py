@@ -1,25 +1,27 @@
-from __future__ import annotations
 import asyncio
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
+import time
+from typing import Optional
+
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import CallbackQuery
 from prometheus_client import Counter, Histogram, Gauge, generate_latest
 from aiohttp import web
-import time
 
 from .config import (
-    TELEGRAM_TOKEN, DEFAULT_LANG, CACHE_TTL_SECONDS,
-    PO_ENABLE_SCRAPE, PO_STRICT_ONLY,
-    ENABLE_CHARTS, LOG_LEVEL
+    TELEGRAM_TOKEN, CACHE_TTL_SECONDS,
+    PO_ENABLE_SCRAPE, ENABLE_CHARTS, LOG_LEVEL
 )
-from .states import ForecastStates as ST
 from .keyboards_inline import (
     get_mode_keyboard, get_category_keyboard, get_pairs_keyboard,
     get_timeframe_keyboard, get_restart_keyboard
 )
 from .utils.cache import TTLCache
 from .utils.logging import setup
-from .pairs import all_pairs, get_available_pairs, availability_checker, get_pair_info
+from .pairs import get_available_pairs, availability_checker, get_pair_info
 from .analysis.indicators import compute_indicators
 from .analysis.decision import signal_from_indicators, simple_ta_signal
 from .data_sources.fetchers import CompositeFetcher
@@ -35,19 +37,23 @@ ERROR_COUNT = Counter('bot_errors_total', 'Total number of errors', ['error_type
 CACHE_HITS = Counter('bot_cache_hits_total', 'Total number of cache hits')
 CACHE_MISSES = Counter('bot_cache_misses_total', 'Total number of cache misses')
 
+# Core
 bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+dp = Dispatcher(storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
-
-# Создаём единственный инстанс CompositeFetcher для всего приложения
 _fetcher = CompositeFetcher()
-
-# Хранилище активных пользователей
 active_users = set()
 
 
-def track_time(method_name):
-    """Decorator to track execution time"""
+# FSM States
+class ForecastStates(StatesGroup):
+    Mode = State()
+    Category = State()
+    Pair = State()
+    Timeframe = State()
+
+
+def track_time(method_name: str):
     def decorator(func):
         async def wrapper(*args, **kwargs):
             start = time.time()
@@ -58,6 +64,7 @@ def track_time(method_name):
             except Exception as e:
                 REQUEST_COUNT.labels(method=method_name, status='error').inc()
                 ERROR_COUNT.labels(error_type=type(e).__name__).inc()
+                logger.exception(f"{method_name} error: {e}")
                 raise
             finally:
                 RESPONSE_TIME.labels(method=method_name).observe(time.time() - start)
@@ -65,122 +72,109 @@ def track_time(method_name):
     return decorator
 
 
-def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"):
-    """Format forecast message - always in English"""
+def format_forecast_message(mode: str, timeframe: str, action: str, data: Optional[dict] = None, notes=None) -> str:
     tf_upper = timeframe.upper()
-
-    if mode == "ind":
-        # For indicators
-        message_parts = [
-            f"🎯 **FORECAST for {tf_upper}**",
+    if mode == "ind" and data:
+        parts = [
+            f"🎯 FORECAST for {tf_upper}",
             "",
-            f"💡 Recommendation: **{action}**",
+            f"💡 Recommendation: {action}",
             "",
-            "📊 **Indicators:**",
-            f"• RSI: {data['RSI']:.1f}",
-            f"• EMA fast: {data['EMA_fast']:.5f}",
-            f"• EMA slow: {data['EMA_slow']:.5f}",
-            f"• MACD: {data['MACD']:.5f}",
-            f"• MACD signal: {data['MACD_signal']:.5f}"
+            "📊 Indicators:",
+            f"• RSI: {data.get('RSI', 0):.1f}",
+            f"• EMA fast: {data.get('EMA_fast', 0):.5f}",
+            f"• EMA slow: {data.get('EMA_slow', 0):.5f}",
+            f"• MACD: {data.get('MACD', 0):.5f}",
+            f"• MACD signal: {data.get('MACD_signal', 0):.5f}",
         ]
     else:
-        # For technical analysis
-        message_parts = [
-            f"🎯 **FORECAST for {tf_upper}**",
+        parts = [
+            f"🎯 FORECAST for {tf_upper}",
             "",
-            f"💡 Recommendation: **{action}**",
+            f"💡 Recommendation: {action}",
             "",
-            "📊 **Technical Analysis:**"
+            "📊 Technical Analysis:",
         ]
-
         if notes:
-            for note in notes:
-                message_parts.append(f"• {note}")
+            parts.extend([f"• {n}" for n in notes])
         else:
-            message_parts.append("• Market analysis completed")
-
+            parts.append("• Market analysis completed")
     if notes and mode == "ind":
-        message_parts.extend(["", "ℹ️ **Additional Notes:**"])
-        for note in notes:
-            message_parts.append(f"• {note}")
-
-    message_parts.extend(["", "_Analysis based on market data patterns_"])
-
-    return "\n".join(message_parts)
+        parts.extend(["", "ℹ️ Additional Notes:"])
+        parts.extend([f"• {n}" for n in notes])
+    parts.extend(["", "_Analysis based on market data patterns_"])
+    return "\n".join(parts)
 
 
-@dp.message_handler(commands=["start"])
+# /start
+@dp.message(Command("start"))
 @track_time("start_command")
-async def cmd_start(m: types.Message, state: FSMContext, **kwargs):
-    await state.finish()
-    await state.update_data(lang="en")  # Always English
-
-    # Track active user
-    active_users.add(m.from_user.id)
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await state.update_data(lang="en")
+    active_users.add(message.from_user.id)
     ACTIVE_USERS.set(len(active_users))
+    await message.answer("Hello! Choose analysis mode:", reply_markup=get_mode_keyboard())
+    await state.set_state(ForecastStates.Mode)
+    logger.debug("Entered state: Mode")
 
-    welcome_text = "Hello! Choose analysis mode:"
-    await m.answer(welcome_text, reply_markup=get_mode_keyboard())
-    await ST.Mode.set()
 
-
-@dp.callback_query_handler(lambda c: c.data == "back", state="*")
-async def handle_back(callback: types.CallbackQuery, state: FSMContext, **kwargs):
-    current_state = await state.get_state()
+# Back
+@dp.callback_query(F.data == "back")
+async def handle_back(callback: CallbackQuery, state: FSMContext):
+    current = await state.get_state()
     data = await state.get_data()
-    lang = "en"
+    logger.debug(f"Back pressed. Current state: {current}, data: {data}")
 
-    if current_state == "ForecastStates:Category":
+    if current == ForecastStates.Category.state:
         await callback.message.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
-        await ST.Mode.set()
+        await state.set_state(ForecastStates.Mode)
 
-    elif current_state == "ForecastStates:Pair":
+    elif current == ForecastStates.Pair.state:
         await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
-        await ST.Category.set()
+        await state.set_state(ForecastStates.Category)
 
-    elif current_state == "ForecastStates:Timeframe":
+    elif current == ForecastStates.Timeframe.state:
         cat = data.get("category", "fin")
         pairs = await get_available_pairs(cat)
         await callback.message.edit_text("Choose pair:", reply_markup=get_pairs_keyboard(pairs))
-        await ST.Pair.set()
+        await state.set_state(ForecastStates.Pair)
 
     else:
-        await cmd_start_inline(callback.message, state)
+        # Default to start
+        await state.clear()
+        await callback.message.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
+        await state.set_state(ForecastStates.Mode)
 
     await callback.answer()
 
 
-@dp.callback_query_handler(lambda c: c.data == "restart", state="*")
-async def handle_restart(callback: types.CallbackQuery, state: FSMContext, **kwargs):
-    await state.finish()
+# Restart
+@dp.callback_query(F.data == "restart")
+async def handle_restart(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await state.update_data(lang="en")
     await callback.message.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
-    await ST.Mode.set()
+    await state.set_state(ForecastStates.Mode)
     await callback.answer()
+    logger.debug("Restarted to state: Mode")
 
 
-async def cmd_start_inline(m: types.Message, state: FSMContext, **kwargs):
-    """Start command for inline mode"""
-    await state.finish()
-    await state.update_data(lang="en")
-    await m.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
-    await ST.Mode.set()
-
-
-@dp.callback_query_handler(state=ST.Mode)
+# Mode selection
+@dp.callback_query(StateFilter(ForecastStates.Mode))
 @track_time("mode_selection")
-async def set_mode(callback: types.CallbackQuery, state: FSMContext, **kwargs):
-    mode = callback.data  # "ta" or "ind"
-    await state.update_data(mode=mode)
-
+async def set_mode(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(mode=callback.data)  # expects "ta" or "ind"
     await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
-    await ST.Category.set()
+    await state.set_state(ForecastStates.Category)
     await callback.answer()
+    logger.debug("Entered state: Category")
 
 
-@dp.callback_query_handler(state=ST.Category)
+# Category selection
+@dp.callback_query(StateFilter(ForecastStates.Category))
 @track_time("category_selection")
-async def set_category(callback: types.CallbackQuery, state: FSMContext, **kwargs):
+async def set_category(callback: CallbackQuery, state: FSMContext):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -189,22 +183,25 @@ async def set_category(callback: types.CallbackQuery, state: FSMContext, **kwarg
     await state.update_data(category=cat)
 
     pairs = await get_available_pairs(cat)
-
     if not pairs:
-        await callback.message.edit_text("No pairs available at the moment. Please try later.",
-                                         reply_markup=get_restart_keyboard())
-        await state.finish()
+        await callback.message.edit_text(
+            "No pairs available at the moment. Please try later.",
+            reply_markup=get_restart_keyboard()
+        )
+        await state.clear()
         await callback.answer()
         return
 
     await callback.message.edit_text("Choose pair:", reply_markup=get_pairs_keyboard(pairs))
-    await ST.Pair.set()
+    await state.set_state(ForecastStates.Pair)
     await callback.answer()
+    logger.debug("Entered state: Pair")
 
 
-@dp.callback_query_handler(state=ST.Pair)
+# Pair selection
+@dp.callback_query(StateFilter(ForecastStates.Pair))
 @track_time("pair_selection")
-async def set_pair(callback: types.CallbackQuery, state: FSMContext, **kwargs):
+async def set_pair(callback: CallbackQuery, state: FSMContext):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -233,13 +230,15 @@ async def set_pair(callback: types.CallbackQuery, state: FSMContext, **kwargs):
 
     await state.update_data(pair=pair_name)
     await callback.message.edit_text("Choose timeframe:", reply_markup=get_timeframe_keyboard())
-    await ST.Timeframe.set()
+    await state.set_state(ForecastStates.Timeframe)
     await callback.answer()
+    logger.debug("Entered state: Timeframe")
 
 
-@dp.callback_query_handler(state=ST.Timeframe)
+# Timeframe selection
+@dp.callback_query(StateFilter(ForecastStates.Timeframe))
 @track_time("forecast_generation")
-async def set_timeframe(callback: types.CallbackQuery, state: FSMContext, **kwargs):
+async def set_timeframe(callback: CallbackQuery, state: FSMContext):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -248,30 +247,25 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext, **kwar
     mode = data.get("mode", "ind")
     cat = data.get("category", "fin")
     pair_human = data.get("pair")
-    tf = callback.data  # Timeframe like "1m", "5m", etc.
+    tf = callback.data  # e.g. "1m", "5m"
 
     await callback.answer("⏳ Analyzing...")
 
-    # Send processing message
     processing_msg = await callback.message.edit_text("⏳ Analyzing PocketOption data...")
 
     pair_info = get_pair_info(pair_human)
     if not pair_info:
-        await processing_msg.edit_text(
-            f"Error: Invalid pair {pair_human}",
-            reply_markup=get_restart_keyboard()
-        )
-        await state.finish()
+        await processing_msg.edit_text("Error: Invalid pair", reply_markup=get_restart_keyboard())
+        await state.clear()
         return
 
     try:
-        logger.info(f"Loading OHLC data for {pair_human} ({pair_info}) on {tf}")
         cache_key = f"{pair_info['po']}_{tf}_{cat}"
         df = cache.get(cache_key)
 
         if df is None:
             CACHE_MISSES.inc()
-            df = await load_ohlc(pair_info, timeframe=tf, category=cat)
+            df = await _fetcher.fetch(pair_info['po'], timeframe=tf, otc=(cat == "otc"))
             if df is not None and len(df) > 0:
                 cache.set(cache_key, df)
                 logger.info(f"Cached data for {cache_key}")
@@ -280,31 +274,23 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext, **kwar
             logger.info(f"Using cached data for {cache_key}")
 
         if df is None or len(df) == 0:
-            raise Exception("No data received from PocketOption")
+            raise RuntimeError("No data received from PocketOption")
 
         logger.info(f"Got {len(df)} bars for analysis")
 
         if mode == "ind":
-            logger.info("Computing indicators...")
             ind = compute_indicators(df)
             action, notes = signal_from_indicators(df, ind)
             result_message = format_forecast_message(mode, tf, action, ind, notes)
         else:
-            logger.info("Computing TA signal...")
             action, notes = simple_ta_signal(df)
             result_message = format_forecast_message(mode, tf, action, {}, notes)
 
-        # Track forecast
         FORECAST_COUNT.labels(pair=pair_human, timeframe=tf, action=action).inc()
 
-        await processing_msg.edit_text(
-            result_message,
-            parse_mode='Markdown',
-            reply_markup=get_restart_keyboard()
-        )
+        await processing_msg.edit_text(result_message, reply_markup=get_restart_keyboard())
         logger.info(f"Sent forecast: {action} for {tf}")
 
-        # Send chart if enabled
         if ENABLE_CHARTS and df is not None and len(df) > 0:
             try:
                 from .utils.charts import plot_candles
@@ -326,52 +312,7 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext, **kwar
             reply_markup=get_restart_keyboard()
         )
 
-    await state.finish()
-
-
-async def load_ohlc(pair_info: dict, timeframe: str, category: str):
-    if not PO_ENABLE_SCRAPE:
-        raise RuntimeError("PocketOption scraping is required (set PO_ENABLE_SCRAPE=1)")
-
-    if not pair_info or 'po' not in pair_info:
-        raise RuntimeError(f"Invalid pair info: {pair_info}")
-
-    otc = (category == "otc")
-    logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
-
-    try:
-        # Используем CompositeFetcher вместо прямого вызова скрапинга
-        df = await _fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
-        if df is None or df.empty:
-            logger.error("Failed to fetch any OHLC data from PocketOption")
-            return None
-
-        try:
-            from .utils.dataframe_fix import fix_ohlc_columns, validate_ohlc_data
-            df = fix_ohlc_columns(df)
-            if not validate_ohlc_data(df):
-                logger.warning("OHLC data validation failed, but continuing")
-        except ImportError:
-            if 'close' in df.columns:
-                df.columns = ['Open', 'High', 'Low', 'Close']
-
-        logger.info(f"DataFrame columns: {df.columns.tolist()}")
-        return df
-
-    except Exception as e:
-        logger.error(f"Failed to fetch OHLC: {e}")
-        raise
-
-
-async def auto_update_availability():
-    while True:
-        try:
-            await availability_checker.update_availability()
-            logger.info("Pairs availability updated")
-        except Exception as e:
-            logger.error(f"Failed to update availability: {e}")
-
-        await asyncio.sleep(300)
+    await state.clear()
 
 
 # Prometheus metrics endpoint
@@ -381,10 +322,8 @@ async def metrics_handler(request):
 
 
 async def start_metrics_server():
-    """Start HTTP server for Prometheus metrics"""
     app = web.Application()
     app.router.add_get('/metrics', metrics_handler)
-
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8080)
@@ -392,7 +331,17 @@ async def start_metrics_server():
     logger.info("Prometheus metrics available at http://0.0.0.0:8080/metrics")
 
 
-def main():
+async def auto_update_availability():
+    while True:
+        try:
+            await availability_checker.update_availability()
+            logger.info("Pairs availability updated")
+        except Exception as e:
+            logger.error(f"Failed to update availability: {e}")
+        await asyncio.sleep(300)
+
+
+async def main():
     print(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10] if TELEGRAM_TOKEN else 'NOT SET'}...")
     print(f"PO_ENABLE_SCRAPE: {PO_ENABLE_SCRAPE}")
     print(f"DEFAULT_LANG: en")
@@ -404,20 +353,13 @@ def main():
     logger.info("Starting Telegram bot...")
     logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG=en")
 
-    loop = asyncio.get_event_loop()
+    # Background services
+    asyncio.create_task(start_metrics_server())
+    asyncio.create_task(auto_update_availability())
 
-    # Start metrics server
-    loop.create_task(start_metrics_server())
-
-    # Start availability updater
-    loop.create_task(auto_update_availability())
-
-    try:
-        executor.start_polling(dp, skip_updates=True)
-    except Exception as e:
-        logger.error(f"Bot error: {e}")
-        raise
+    # Start polling
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
