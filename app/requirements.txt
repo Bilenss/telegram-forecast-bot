@@ -1,25 +1,39 @@
+# Основные библиотеки для работы с данными
 pandas==2.0.3
 numpy==1.24.3
 ta==0.10.2
+
+# HTTP и парсинг
 requests==2.31.0
 beautifulsoup4==4.12.2
 httpx==0.27.0
 fake-useragent==1.5.1
+
+# Кэширование и конфиги
 cachetools==5.3.1
 python-dotenv==1.0.1
 backoff==2.2.1
+
+# Логирование
 loguru==0.7.2
+
+# Графики и визуализация
 mplfinance==0.12.10b0
+
+# Автоматизация браузера
 playwright==1.46.0
+
+# Работа с изображениями и OCR
 opencv-python==4.8.1.78
 Pillow==10.0.1
 pytesseract==0.3.10
 
 # Prometheus monitoring
-prometheus-client==0.19.0
+prometheus-client==0.20.0
+
+# Telegram Bot Framework (aiogram 3.x)
 aiogram==3.4.1
 aiohttp>=3.9.0
-prometheus-client>=0.20.0
-pandas
-numpy
-# и остальные ваши зависимости, включая playwright/selenium/ocr/прокси и т.д.
+
+# Остальные зависимости проекта
+# (добавь сюда свои, например selenium, ocr-библиотеки, прокси и т.д.)
