@@ -1,4 +1,5 @@
 from __future__ import annotations
+from __future__ import annotations
 import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -70,6 +71,7 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
     tf_upper = timeframe.upper()
 
     if mode == "ind":
+        # For indicators
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -83,6 +85,7 @@ def format_forecast_message(mode, timeframe, action, data, notes=None, lang="en"
             f"• MACD signal: {data['MACD_signal']:.5f}"
         ]
     else:
+        # For technical analysis
         message_parts = [
             f"🎯 **FORECAST for {tf_upper}**",
             "",
@@ -113,6 +116,7 @@ async def cmd_start(m: types.Message, state: FSMContext, **kwargs):
     await state.finish()
     await state.update_data(lang="en")  # Always English
 
+    # Track active user
     active_users.add(m.from_user.id)
     ACTIVE_USERS.set(len(active_users))
 
@@ -122,7 +126,7 @@ async def cmd_start(m: types.Message, state: FSMContext, **kwargs):
 
 
 @dp.callback_query_handler(lambda c: c.data == "back", state="*")
-async def handle_back(callback: types.CallbackQuery, state: FSMContext):
+async def handle_back(callback: types.CallbackQuery, state: FSMContext, **kwargs):
     current_state = await state.get_state()
     data = await state.get_data()
     lang = "en"
@@ -148,7 +152,7 @@ async def handle_back(callback: types.CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query_handler(lambda c: c.data == "restart", state="*")
-async def handle_restart(callback: types.CallbackQuery, state: FSMContext):
+async def handle_restart(callback: types.CallbackQuery, state: FSMContext, **kwargs):
     await state.finish()
     await state.update_data(lang="en")
     await callback.message.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
@@ -156,7 +160,8 @@ async def handle_restart(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def cmd_start_inline(m: types.Message, state: FSMContext):
+async def cmd_start_inline(m: types.Message, state: FSMContext, **kwargs):
+    """Start command for inline mode"""
     await state.finish()
     await state.update_data(lang="en")
     await m.edit_text("Choose analysis mode:", reply_markup=get_mode_keyboard())
@@ -165,8 +170,8 @@ async def cmd_start_inline(m: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(state=ST.Mode)
 @track_time("mode_selection")
-async def set_mode(callback: types.CallbackQuery, state: FSMContext):
-    mode = callback.data
+async def set_mode(callback: types.CallbackQuery, state: FSMContext, **kwargs):
+    mode = callback.data  # "ta" or "ind"
     await state.update_data(mode=mode)
 
     await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
@@ -176,12 +181,12 @@ async def set_mode(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query_handler(state=ST.Category)
 @track_time("category_selection")
-async def set_category(callback: types.CallbackQuery, state: FSMContext):
+async def set_category(callback: types.CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
 
-    cat = callback.data
+    cat = callback.data  # "fin" or "otc"
     await state.update_data(category=cat)
 
     pairs = await get_available_pairs(cat)
@@ -200,7 +205,7 @@ async def set_category(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query_handler(state=ST.Pair)
 @track_time("pair_selection")
-async def set_pair(callback: types.CallbackQuery, state: FSMContext):
+async def set_pair(callback: types.CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -235,7 +240,7 @@ async def set_pair(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query_handler(state=ST.Timeframe)
 @track_time("forecast_generation")
-async def set_timeframe(callback: types.CallbackQuery, state: FSMContext):
+async def set_timeframe(callback: types.CallbackQuery, state: FSMContext, **kwargs):
     if callback.data == "back":
         await handle_back(callback, state)
         return
@@ -244,16 +249,19 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext):
     mode = data.get("mode", "ind")
     cat = data.get("category", "fin")
     pair_human = data.get("pair")
-    tf = callback.data
+    tf = callback.data  # Timeframe like "1m", "5m", etc.
 
     await callback.answer("⏳ Analyzing...")
 
+    # Send processing message
     processing_msg = await callback.message.edit_text("⏳ Analyzing PocketOption data...")
 
     pair_info = get_pair_info(pair_human)
     if not pair_info:
-        await processing_msg.edit_text(f"Error: Invalid pair {pair_human}",
-                                       reply_markup=get_restart_keyboard())
+        await processing_msg.edit_text(
+            f"Error: Invalid pair {pair_human}",
+            reply_markup=get_restart_keyboard()
+        )
         await state.finish()
         return
 
@@ -287,12 +295,17 @@ async def set_timeframe(callback: types.CallbackQuery, state: FSMContext):
             action, notes = simple_ta_signal(df)
             result_message = format_forecast_message(mode, tf, action, {}, notes)
 
+        # Track forecast
         FORECAST_COUNT.labels(pair=pair_human, timeframe=tf, action=action).inc()
 
-        await processing_msg.edit_text(result_message, parse_mode='Markdown',
-                                       reply_markup=get_restart_keyboard())
+        await processing_msg.edit_text(
+            result_message,
+            parse_mode='Markdown',
+            reply_markup=get_restart_keyboard()
+        )
         logger.info(f"Sent forecast: {action} for {tf}")
 
+        # Send chart if enabled
         if ENABLE_CHARTS and df is not None and len(df) > 0:
             try:
                 from .utils.charts import plot_candles
@@ -328,6 +341,7 @@ async def load_ohlc(pair_info: dict, timeframe: str, category: str):
     logger.info(f"Fetching {pair_info['po']} data, otc={otc}, timeframe={timeframe}")
 
     try:
+        # Используем CompositeFetcher вместо прямого вызова скрапинга
         df = await _fetcher.fetch(pair_info['po'], timeframe=timeframe, otc=otc)
         if df is None or df.empty:
             logger.error("Failed to fetch any OHLC data from PocketOption")
@@ -361,12 +375,14 @@ async def auto_update_availability():
         await asyncio.sleep(300)
 
 
+# Prometheus metrics endpoint
 async def metrics_handler(request):
     metrics = generate_latest()
     return web.Response(body=metrics, content_type="text/plain")
 
 
 async def start_metrics_server():
+    """Start HTTP server for Prometheus metrics"""
     app = web.Application()
     app.router.add_get('/metrics', metrics_handler)
 
@@ -390,7 +406,11 @@ def main():
     logger.info(f"Bot configuration: PO_ENABLE_SCRAPE={PO_ENABLE_SCRAPE}, DEFAULT_LANG=en")
 
     loop = asyncio.get_event_loop()
+
+    # Start metrics server
     loop.create_task(start_metrics_server())
+
+    # Start availability updater
     loop.create_task(auto_update_availability())
 
     try:
