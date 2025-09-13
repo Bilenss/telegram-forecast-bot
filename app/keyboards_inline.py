@@ -1,120 +1,90 @@
 # app/keyboards_inline.py
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+# -*- coding: utf-8 -*-
+
+from typing import Iterable, Sequence
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup
 
 
-def get_mode_keyboard(lang="en"):
-    """Analysis mode selection keyboard - English only"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("📊 Technical analysis", callback_data="ta"),
-        InlineKeyboardButton("📈 Indicators", callback_data="ind")
-    )
-    return keyboard
+def get_mode_keyboard() -> InlineKeyboardMarkup:
+    """
+    Two buttons: Indicators (ind) and Technical analysis (ta)
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Indicators", callback_data="ind")
+    kb.button(text="Technical", callback_data="ta")
+    kb.adjust(2)
+    return kb.as_markup()
 
 
-def get_category_keyboard(lang="en"):
-    """Asset category keyboard with Back button - English only"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("💰 ACTIVE FIN", callback_data="fin"),
-        InlineKeyboardButton("⏱️ ACTIVE OTC", callback_data="otc")
-    )
-    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="back"))
-    return keyboard
+def get_category_keyboard() -> InlineKeyboardMarkup:
+    """
+    Two main categories + Back/Restart row
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Financial", callback_data="fin")
+    kb.button(text="OTC", callback_data="otc")
+    kb.adjust(2)
+    # Control row
+    kb.button(text="⬅️ Back", callback_data="back")
+    kb.button(text="🔄 Restart", callback_data="restart")
+    kb.adjust(2)
+    return kb.as_markup()
 
 
-def get_pairs_keyboard(pairs, lang="en"):
-    """Currency pair keyboard with Back button - English only"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    
-    # Add pairs in rows of 2
-    pair_buttons = []
-    for name in pairs.keys():
-        # Truncate long pair names if needed
-        display_name = name[:15] + "..." if len(name) > 15 else name
-        pair_buttons.append(InlineKeyboardButton(display_name, callback_data=name))
-    
-    # Add buttons in pairs
-    for i in range(0, len(pair_buttons), 2):
-        if i + 1 < len(pair_buttons):
-            keyboard.row(pair_buttons[i], pair_buttons[i + 1])
-        else:
-            keyboard.row(pair_buttons[i])
-    
-    # Add Back button
-    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="back"))
-    return keyboard
+def get_pairs_keyboard(pairs: Sequence[str]) -> InlineKeyboardMarkup:
+    """
+    Pairs list as buttons, 2 columns. Then Back/Restart.
+    `pairs` should be a sequence of human-readable pair names (strings).
+    """
+    kb = InlineKeyboardBuilder()
+
+    for p in pairs:
+        # callback_data — это сам текст пары (как и ожидалось в set_pair)
+        kb.button(text=p, callback_data=p)
+
+    # Разместим по 2 в строке
+    if len(pairs) > 1:
+        kb.adjust(2)
+    else:
+        kb.adjust(1)
+
+    # Управляющие кнопки
+    kb.button(text="⬅️ Back", callback_data="back")
+    kb.button(text="🔄 Restart", callback_data="restart")
+    kb.adjust(2)
+
+    return kb.as_markup()
 
 
-def get_timeframe_keyboard(lang="en", po_available=True):
-    """Timeframe keyboard with Back button - English only"""
-    timeframes = [
-        ("30s", "30s"), ("1m", "1m"), ("2m", "2m"),
-        ("3m", "3m"), ("5m", "5m"), ("10m", "10m"),
-        ("15m", "15m"), ("30m", "30m"), ("1h", "1h")
-    ]
-    
-    keyboard = InlineKeyboardMarkup(row_width=3)
-    
-    # Add timeframe buttons in rows of 3
-    for i in range(0, len(timeframes), 3):
-        row_buttons = []
-        for j in range(3):
-            if i + j < len(timeframes):
-                display, data = timeframes[i + j]
-                row_buttons.append(InlineKeyboardButton(display, callback_data=data))
-        keyboard.row(*row_buttons)
-    
-    # Add Back button
-    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="back"))
-    return keyboard
+def get_timeframe_keyboard() -> InlineKeyboardMarkup:
+    """
+    Timeframes grid + Back/Restart row.
+    Отредактируй набор под свои нужды.
+    """
+    tfs: Iterable[str] = ("1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h")
+    kb = InlineKeyboardBuilder()
+
+    for tf in tfs:
+        kb.button(text=tf, callback_data=tf)
+
+    # по 4 кнопки в строке
+    kb.adjust(4)
+
+    # Управляющие кнопки
+    kb.button(text="⬅️ Back", callback_data="back")
+    kb.button(text="🔄 Restart", callback_data="restart")
+    kb.adjust(2)
+
+    return kb.as_markup()
 
 
-def get_restart_keyboard(lang="en"):
-    """Keyboard with New forecast button after getting forecast - English only"""
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("🔄 New forecast", callback_data="restart"),
-        InlineKeyboardButton("📊 Start over", callback_data="restart")
-    )
-    return keyboard
-
-
-def get_confirmation_keyboard(lang="en"):
-    """Confirmation keyboard for important actions"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("✅ Yes", callback_data="confirm_yes"),
-        InlineKeyboardButton("❌ No", callback_data="confirm_no")
-    )
-    return keyboard
-
-
-def get_settings_keyboard(lang="en"):
-    """Settings keyboard for user preferences"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("🎨 Theme", callback_data="settings_theme"),
-        InlineKeyboardButton("📈 Default TF", callback_data="settings_timeframe")
-    )
-    keyboard.add(
-        InlineKeyboardButton("🔔 Notifications", callback_data="settings_notifications"),
-        InlineKeyboardButton("💾 Export Data", callback_data="settings_export")
-    )
-    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="back"))
-    return keyboard
-
-
-def get_help_keyboard(lang="en"):
-    """Help keyboard with useful links"""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("📚 Guide", callback_data="help_guide"),
-        InlineKeyboardButton("❓ FAQ", callback_data="help_faq")
-    )
-    keyboard.add(
-        InlineKeyboardButton("💬 Support", url="https://t.me/support"),
-        InlineKeyboardButton("📊 Channel", url="https://t.me/trading_channel")
-    )
-    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="back"))
-    return keyboard
+def get_restart_keyboard() -> InlineKeyboardMarkup:
+    """
+    Minimal control keyboard with Restart (+ optionally Back).
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Restart", callback_data="restart")
+    kb.button(text="⬅️ Back", callback_data="back")
+    kb.adjust(2)
+    return kb.as_markup()
