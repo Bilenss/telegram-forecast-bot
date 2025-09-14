@@ -56,7 +56,7 @@ PO_FAST_FAIL_SEC   = _env_int("PO_FAST_FAIL_SEC", 45)
 PO_STRICT_ONLY     = _env_bool("PO_STRICT_ONLY", True)
 
 # -----------------------
-# HTTP-API для свечей (только путь, остальное берётся из DevTools)
+# HTTP-API для свечей (не используется, закрыт)
 # -----------------------
 PO_HTTP_API_URL   = _env_str(
     "PO_HTTP_API_URL",
@@ -65,9 +65,9 @@ PO_HTTP_API_URL   = _env_str(
 PO_HTTPX_TIMEOUT  = _env_float("PO_HTTPX_TIMEOUT", 10.0)
 
 # -----------------------
-# WebSocket-fetcher (по необходимости)
+# WebSocket-fetcher для PocketOption (рекомендуемый)
 # -----------------------
-PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", False)
+PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", True)
 PO_WS_URL         = _env_str(
     "PO_WS_URL",
     "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket"
