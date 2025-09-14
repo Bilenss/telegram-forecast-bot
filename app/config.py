@@ -48,7 +48,7 @@ PO_ENTRY_URL        = _env_str("PO_ENTRY_URL", "")
 PO_FAST_FAIL_SEC    = _env_int("PO_FAST_FAIL_SEC", 45)
 PO_STRICT_ONLY      = _env_bool("PO_STRICT_ONLY", True)
 
-# Новые переменные (добавлены)
+# Новые переменные
 PO_FETCH_ORDER      = _env_str("PO_FETCH_ORDER", "po,interceptor,ocr").split(",")
 PO_USE_INTERCEPTOR  = _env_bool("PO_USE_INTERCEPTOR", True)
 PO_USE_OCR          = _env_bool("PO_USE_OCR", False)
@@ -56,7 +56,7 @@ PO_USE_OCR          = _env_bool("PO_USE_OCR", False)
 def _default_entry_url():
     return PO_ENTRY_URL or "https://pocketoption.com/en/cabinet/try-demo/"
 
-# Public sources (not used, but can be kept)
+# Public sources
 ALPHAVANTAGE_KEY = _env_str("ALPHAVANTAGE_KEY", "")
 
 def _mask_secret(s: str, keep: int = 4) -> str:
@@ -76,7 +76,7 @@ def _mask_proxy(proxy: str) -> str:
     except Exception:
         return proxy
 
-# Print config summary at import-time for logs (without secrets)
+# Print config summary
 try:
     from .utils.logging import setup
     logger = setup(LOG_LEVEL)
@@ -110,4 +110,3 @@ except Exception as e:
 # WebSocket-fetcher для PocketOption
 PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", False)
 PO_WS_URL         = _env_str("PO_WS_URL", "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket")
-
