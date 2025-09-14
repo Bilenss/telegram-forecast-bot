@@ -47,12 +47,12 @@ ERROR_COUNT = Counter("bot_errors_total", "Total number of errors", ["error_type
 CACHE_HITS = Counter("bot_cache_hits_total", "Total number of cache hits")
 CACHE_MISSES = Counter("bot_cache_misses_total", "Total number of cache misses")
 
+# Core setup
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 cache = TTLCache(ttl_seconds=CACHE_TTL_SECONDS)
 _fetcher = CompositeFetcher()
 active_users: set[int] = set()
-
 
 def track_time(method_name: str):
     def decorator(func):
@@ -72,8 +72,8 @@ def track_time(method_name: str):
         return wrapper
     return decorator
 
-
 def format_forecast_message(
+    pair: str,
     mode: str,
     timeframe: str,
     action: str,
@@ -81,9 +81,11 @@ def format_forecast_message(
     notes: Optional[list[str]] = None,
 ) -> str:
     tf_upper = timeframe.upper()
+    # Включаем пару в заголовок
+    header = f"🎯 FORECAST for {pair} {tf_upper}"
     if mode == "ind" and data:
         parts = [
-            f"🎯 FORECAST for {tf_upper}",
+            header,
             "",
             f"💡 Recommendation: {action}",
             "",
@@ -96,7 +98,7 @@ def format_forecast_message(
         ]
     else:
         parts = [
-            f"🎯 FORECAST for {tf_upper}",
+            header,
             "",
             f"💡 Recommendation: {action}",
             "",
@@ -106,15 +108,12 @@ def format_forecast_message(
             parts.extend([f"• {n}" for n in notes])
         else:
             parts.append("• Market analysis completed")
-
     if notes and mode == "ind":
         parts.extend(["", "ℹ️ Additional Notes:"])
         parts.extend([f"• {n}" for n in notes])
-
     parts.append("")
     parts.append("_Analysis based on market data patterns_")
     return "\n".join(parts)
-
 
 @dp.message(Command("start"))
 @track_time("start_command")
@@ -124,20 +123,16 @@ async def cmd_start(message: types.Message, state: FSMContext, **kwargs):
     active_users.add(message.from_user.id)
     ACTIVE_USERS.set(len(active_users))
 
-    # стартовое сообщение — кнопка Analysis
     await message.answer("Hello! Choose analysis mode:", reply_markup=get_mode_keyboard())
     await state.set_state(ForecastStates.Mode)
-
 
 @dp.callback_query(F.data == "analysis", StateFilter(ForecastStates.Mode))
 @track_time("mode_selection")
 async def set_mode(callback: CallbackQuery, state: FSMContext, **kwargs):
     await callback.answer()
     await state.update_data(mode="ind")
-    # РЕВЕРТ ПУНКТА 3: редактируем текущее сообщение
     await callback.message.edit_text("Choose asset category:", reply_markup=get_category_keyboard())
     await state.set_state(ForecastStates.Category)
-
 
 @dp.callback_query(StateFilter(ForecastStates.Category))
 @track_time("category_selection")
@@ -147,7 +142,7 @@ async def set_category(callback: CallbackQuery, state: FSMContext, **kwargs):
         return await cmd_start(callback.message, state)
 
     cat = callback.data
-    # блокировка fin по субботам/воскресеньям
+    # блокируем fin по выходным
     if cat == "fin" and datetime.datetime.utcnow().weekday() in (5, 6):
         return await callback.message.edit_text(
             "Financial market is closed on weekends. Please try again on Monday.",
@@ -164,7 +159,6 @@ async def set_category(callback: CallbackQuery, state: FSMContext, **kwargs):
 
     await callback.message.edit_text("Choose pair:", reply_markup=get_pairs_keyboard(pairs))
     await state.set_state(ForecastStates.Pair)
-
 
 @dp.callback_query(StateFilter(ForecastStates.Pair))
 @track_time("pair_selection")
@@ -184,12 +178,10 @@ async def set_pair(callback: CallbackQuery, state: FSMContext, **kwargs):
     await callback.message.edit_text("Choose timeframe:", reply_markup=get_timeframe_keyboard())
     await state.set_state(ForecastStates.Timeframe)
 
-
 @dp.callback_query(StateFilter(ForecastStates.Timeframe))
 @track_time("forecast_generation")
 async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
     await callback.answer("⏳ Analyzing...")
-    # редактируем текущее
     processing_msg = await callback.message.edit_text("⏳ Analyzing PocketOption data...")
 
     data = await state.get_data()
@@ -203,7 +195,9 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
         df = cache.get(cache_key)
         if df is None or df.empty:
             CACHE_MISSES.inc()
-            df = await _fetcher.fetch(get_pair_info(pair_human)["po"], timeframe=tf, otc=(cat == "otc"))
+            df = await _fetcher.fetch(
+                get_pair_info(pair_human)["po"], timeframe=tf, otc=(cat == "otc")
+            )
             if df is not None and not df.empty:
                 cache.set(cache_key, df)
         else:
@@ -215,10 +209,10 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
         if mode == "ind":
             ind = compute_indicators(df)
             action, notes = signal_from_indicators(df, ind)
-            text = format_forecast_message(mode, tf, action, ind, notes)
+            text = format_forecast_message(pair_human, mode, tf, action, ind, notes)
         else:
             action, notes = simple_ta_signal(df)
-            text = format_forecast_message(mode, tf, action, {}, notes)
+            text = format_forecast_message(pair_human, mode, tf, action, {}, notes)
 
         FORECAST_COUNT.labels(pair=pair_human, timeframe=tf, action=action).inc()
         await processing_msg.edit_text(text, reply_markup=get_restart_keyboard())
@@ -232,10 +226,8 @@ async def set_timeframe(callback: CallbackQuery, state: FSMContext, **kwargs):
 
     await state.clear()
 
-
 async def metrics_handler(request):
     return web.Response(body=generate_latest(), content_type="text/plain")
-
 
 async def start_metrics_server():
     app = web.Application()
@@ -245,12 +237,10 @@ async def start_metrics_server():
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
 
-
 async def auto_update_availability():
     while True:
         await availability_checker.update_availability()
         await asyncio.sleep(300)
-
 
 async def main():
     if not TELEGRAM_TOKEN:
@@ -259,7 +249,6 @@ async def main():
     asyncio.create_task(start_metrics_server())
     asyncio.create_task(auto_update_availability())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
