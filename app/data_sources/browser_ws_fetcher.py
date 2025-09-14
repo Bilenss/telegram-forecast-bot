@@ -1,4 +1,5 @@
 # app/data_sources/browser_ws_fetcher.py
+
 import asyncio
 import pandas as pd
 from playwright.async_api import async_playwright
@@ -9,50 +10,47 @@ class BrowserWebSocketFetcher:
         self._lock = asyncio.Lock()
 
     async def fetch(self, symbol: str, timeframe: str, otc: bool=False) -> pd.DataFrame:
-        """
-        Подключаемся к PocketOption в headless браузере,
-        перехватываем WebSocket-сообщения candles.
-        """
         async with self._lock:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch()
                 page = await browser.new_page()
-                messages = []
+                messages: list[tuple[str,str]] = []
 
-                # Перехват всех WS-сообщений, фильтруем по URL и по “candles”
-                page.on("websocket", lambda ws: ws.on("framereceived", 
-                    lambda frame: messages.append((ws.url, frame.payload))
-                ))
+                # Перехват всех WS-сообщений
+                page.on(
+                    "websocket",
+                    lambda ws: ws.on(
+                        "framereceived",
+                        lambda data: messages.append((
+                            ws.url,
+                            data.decode("utf-8")
+                            if isinstance(data, (bytes, bytearray))
+                            else data
+                        ))
+                    )
+                )
 
-                # Навигируем на демо-кабинет
+                # Навигация и ожидание загрузки WS
                 await page.goto(PO_ENTRY_URL, timeout=PO_NAV_TIMEOUT_MS)
-                # Ждём, пока WS откроется
-                await asyncio.sleep(1)
+                await asyncio.sleep(1)  # даём WS окнектиться
+                await asyncio.sleep(PO_IDLE_TIMEOUT_MS / 1000)  # ждём приход фреймов
 
-                # Эмулируем подписку на подсчет баров (точный код зависит от клиента PO)
-                # Здесь мы просто используем тот же URL, он откроется автоматически при загрузке
-                # Если нужно – можно прокинуть через page.evaluate JS-код подписки.
+                await browser.close()
 
-                # Ждём, пока придут сообщения
-                await asyncio.sleep(PO_IDLE_TIMEOUT_MS / 1000)
-
-                # Фильтруем нужный канал
-                key = f"{symbol}_{timeframe}"
+                # Ищем первый подходящий фрейм с "candles"
                 raw = []
                 for url, payload in messages:
                     if PO_BROWSER_WS_URL.split("?")[0] in url and "candles" in payload:
-                        # payload – строка вида '42["candles",["AUDUSD",15,[[...]]]]'
+                        # удаляем префикс socket.io (например '42')
                         try:
-                            # убираем префикс Socket.IO '42'
-                            j = payload.lstrip("42")
-                            arr = pd.json.loads(j)
+                            # payload вроде '42["candles",["EURUSD",15,[[...]]]]'
+                            json_part = payload.lstrip("0123456789")
+                            arr = pd.json.loads(json_part)
                             if arr[0] == "candles" and arr[1][0] == symbol and arr[1][1] == int(timeframe.rstrip("mHh")):
                                 raw = arr[1][2]
                                 break
                         except Exception:
                             continue
-
-                await browser.close()
 
                 if not raw:
                     return pd.DataFrame()
