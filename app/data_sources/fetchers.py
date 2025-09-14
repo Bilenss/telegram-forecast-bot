@@ -1,4 +1,6 @@
+# app/data_sources/fetchers.py
 import pandas as pd
+
 from ..config import (
     PO_FETCH_ORDER,
     PO_USE_INTERCEPTOR,
@@ -35,20 +37,29 @@ class CompositeFetcher:
             "interceptor": InterceptorFetcher(),
             "ocr":        OCRFetcher(),
         }
+
         order = []
         if PO_USE_WS_FETCHER:
             order.append("ws")
+
         order += [
             key for key in PO_FETCH_ORDER
             if key in providers
             and (key != "interceptor" or PO_USE_INTERCEPTOR)
-            and (key != "ocr"         or PO_USE_OCR)
+            and (key != "ocr" or PO_USE_OCR)
         ]
+
         self.fetchers = [providers[k] for k in order]
 
-    async def fetch(self, symbol, timeframe, otc=False):
+    async def fetch(self, symbol, timeframe, otc=False) -> pd.DataFrame:
         for f in self.fetchers:
-            df = await f.fetch(symbol, timeframe, otc)
-            if df is not None and not df.empty:
-                return df
+            try:
+                df = await f.fetch(symbol, timeframe, otc)
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                # логируем и пробуем следующий
+                logging.getLogger(__name__).error(
+                    "Fetcher %s error: %s", type(f).__name__, e
+                )
         return pd.DataFrame()
