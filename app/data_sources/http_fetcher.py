@@ -1,59 +1,60 @@
-# app/data_sources/http_fetcher.py
 import time
 import httpx
 import pandas as pd
-from ..config import PO_HTTP_API_URL, PO_HTTPX_TIMEOUT, PO_ENTRY_URL
+from ..config import PO_ENTRY_URL, PO_HTTP_API_URL, PO_HTTPX_TIMEOUT
 
 class HTTPFetcher:
     async def fetch(self, symbol: str, timeframe: str, otc: bool=False) -> pd.DataFrame:
         """
-        1) GET главную страницу, чтобы клиент сохранил куки
-        2) GET запроса исторических свечей (XHR) с теми же куками/headers
+        1) Заливаем страницу, чтобы собрать куки
+        2) Повторяем XHR-запрос с теми же куками и заголовками
         """
         if not PO_HTTP_API_URL:
             return pd.DataFrame()
 
-        # Маппинг длины свечи
-        interval_map = {
-            "1m": 60_000,
-            "2m": 2 * 60_000,
-            "3m": 3 * 60_000,
-            "5m": 5 * 60_000,
-            "10m": 10 * 60_000,
-            "15m": 15 * 60_000,
-            "30m": 30 * 60_000,
-            "1h": 60 * 60_000,
+        # рассчитываем period в мс
+        now = int(time.time() * 1000)
+        tf_map = {
+            "1m": 60_000, "2m": 120_000, "3m": 180_000,
+            "5m": 300_000, "10m": 600_000, "15m": 900_000,
+            "30m": 1_800_000,"1h": 3_600_000
         }
-        interval = interval_map.get(timeframe, 60_000)
-
-        now_ms   = int(time.time() * 1000)
-        start_ms = now_ms - interval * 100  # последние 100 свечей
+        interval = tf_map.get(timeframe, 60_000)
+        start = now - interval * 100  # 100 баров
 
         params = {
-            "symbol":     symbol,
-            "timeframe":  timeframe.rstrip("m"),  # или как требует API
-            "from":       start_ms,
-            "to":         now_ms,
+            "symbol":    symbol,
+            "timeframe": timeframe.rstrip("m"),
+            "from":      start,
+            "to":        now,
         }
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept":     "application/json, text/plain, */*",
-            "Referer":    PO_ENTRY_URL,
+            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept":          "application/json, text/plain, */*",
+            "Referer":         PO_ENTRY_URL,
+            "Origin":          "https://pocketoption.com",
+            # "Cookie":       client.cookies.jar if нужно вручную
         }
 
-        async with httpx.AsyncClient(timeout=PO_HTTPX_TIMEOUT) as client:
-            # 1) Загружаем демо-кабинет, чтобы получить куки
+        async with httpx.AsyncClient(
+            timeout=PO_HTTPX_TIMEOUT,
+            follow_redirects=True
+        ) as client:
+            # 1) примим куки
             await client.get(PO_ENTRY_URL, headers=headers)
-            # 2) Запрашиваем свечи XHR
+            # 2) реальный XHR
             resp = await client.get(PO_HTTP_API_URL, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 
-        candles = data.get("candles", [])
+        candles = data.get("candles") or []
         if not candles:
             return pd.DataFrame()
 
-        df = pd.DataFrame(candles, columns=["timestamp","open","high","low","close"])
+        df = pd.DataFrame(
+            candles,
+            columns=["timestamp","open","high","low","close"]
+        )
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         return df
