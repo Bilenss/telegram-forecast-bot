@@ -111,10 +111,6 @@ except Exception as e:
 PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", False)
 PO_WS_URL         = _env_str("PO_WS_URL", "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket")
 
-# WebSocket-fetcher для PocketOption
-PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", False)
-PO_WS_URL         = _env_str("PO_WS_URL", "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket")
-
 # Включить Browser-WS-фетчер вместо UI-скрапинга
 PO_USE_BROWSER_WS = _env_bool("PO_USE_BROWSER_WS", False)
 PO_BROWSER_WS_URL = _env_str(
@@ -122,3 +118,10 @@ PO_BROWSER_WS_URL = _env_str(
     "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket"
 )
 
+# HTTP-API для исторических свечей PocketOption
+PO_HTTP_API_URL = _env_str(
+    "PO_HTTP_API_URL",
+    ""  # сюда скопируйте из DevTools полный URL, например:
+        # https://try-demo-eu.po.market/api/chart/history
+)
+PO_HTTPX_TIMEOUT = _env_float("PO_HTTPX_TIMEOUT", 10.0)
