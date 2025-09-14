@@ -106,3 +106,8 @@ try:
     }))
 except Exception as e:
     print(f"Config logging error: {e}")
+
+# WebSocket-fetcher для PocketOption
+PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", False)
+PO_WS_URL         = _env_str("PO_WS_URL", "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket")
+
