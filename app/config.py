@@ -65,12 +65,13 @@ PO_HTTP_API_URL   = _env_str(
 PO_HTTPX_TIMEOUT  = _env_float("PO_HTTPX_TIMEOUT", 10.0)
 
 # -----------------------
-# WebSocket-fetcher для PocketOption (рекомендуемый)
-# -----------------------
+# WebSocket для Socket.IO‐фетчера PocketOption
 PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", True)
-PO_WS_URL         = _env_str(
+
+PO_WS_URL = _env_str(
     "PO_WS_URL",
-    "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket"
+    # Базовый URL без параметров, без кавычек
+    "https://try-demo-eu.po.market/socket.io"
 )
 
 # -----------------------
