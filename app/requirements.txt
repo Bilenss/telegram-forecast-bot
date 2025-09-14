@@ -35,5 +35,8 @@ prometheus-client==0.20.0
 aiogram==3.4.1
 aiohttp>=3.9.0
 
+# Боты / async-клиенты
+python-socketio[asyncio_client]==5.9.0
+
 # Остальные зависимости проекта
 # (добавь сюда свои, например selenium, ocr-библиотеки, прокси и т.д.)
