@@ -2,6 +2,9 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 
+# -----------------------
+# Env helpers
+# -----------------------
 def _env_str(name: str, default: str = "") -> str:
     v = os.environ.get(name)
     return v if v is not None else default
@@ -24,7 +27,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
     if v is None or v == "":
         return default
-    return str(v).strip().lower() in ("1","true","yes","y","on")
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 # -----------------------
 # Core
@@ -65,13 +68,12 @@ PO_HTTP_API_URL   = _env_str(
 PO_HTTPX_TIMEOUT  = _env_float("PO_HTTPX_TIMEOUT", 10.0)
 
 # -----------------------
-# WebSocket для Socket.IO‐фетчера PocketOption
+# WebSocket-фетчер для PocketOption
+# -----------------------
 PO_USE_WS_FETCHER = _env_bool("PO_USE_WS_FETCHER", True)
-
 PO_WS_URL = _env_str(
     "PO_WS_URL",
-    # Базовый URL без параметров, без кавычек
-    "https://try-demo-eu.po.market/socket.io"
+    "wss://try-demo-eu.po.market/socket.io/?EIO=4&transport=websocket"
 )
 
 # -----------------------
@@ -86,7 +88,7 @@ PO_BROWSER_WS_URL = _env_str(
 # -----------------------
 # Interceptor / OCR flags
 # -----------------------
-PO_FETCH_ORDER     = _env_str("PO_FETCH_ORDER","po,interceptor,ocr").split(",")
+PO_FETCH_ORDER     = _env_str("PO_FETCH_ORDER", "po,interceptor,ocr").split(",")
 PO_USE_INTERCEPTOR = _env_bool("PO_USE_INTERCEPTOR", True)
 PO_USE_OCR         = _env_bool("PO_USE_OCR", False)
 
@@ -101,7 +103,7 @@ ALPHAVANTAGE_KEY = _env_str("ALPHAVANTAGE_KEY", "")
 def _mask_secret(s: str, keep: int = 4) -> str:
     if not s:
         return ""
-    return s[:keep] + "…" + "*"*(len(s)-keep)
+    return s[:keep] + "…" + "*" * max(0, len(s) - keep)
 
 def _mask_proxy(proxy: str) -> str:
     if not proxy:
