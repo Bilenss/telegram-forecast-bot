@@ -1,5 +1,5 @@
-# app/data_sources/fetchers.py
 import pandas as pd
+import logging
 
 from ..config import (
     PO_FETCH_ORDER,
@@ -7,7 +7,6 @@ from ..config import (
     PO_USE_OCR,
     PO_USE_WS_FETCHER,
 )
-
 from .ws_fetcher import WebSocketFetcher
 from .pocketoption_scraper import fetch_po_ohlc_async
 from .po_interceptor import PocketOptionInterceptor
@@ -41,12 +40,11 @@ class CompositeFetcher:
         order = []
         if PO_USE_WS_FETCHER:
             order.append("ws")
-
         order += [
             key for key in PO_FETCH_ORDER
             if key in providers
             and (key != "interceptor" or PO_USE_INTERCEPTOR)
-            and (key != "ocr" or PO_USE_OCR)
+            and (key != "ocr"         or PO_USE_OCR)
         ]
 
         self.fetchers = [providers[k] for k in order]
@@ -58,7 +56,6 @@ class CompositeFetcher:
                 if df is not None and not df.empty:
                     return df
             except Exception as e:
-                # логируем и пробуем следующий
                 logging.getLogger(__name__).error(
                     "Fetcher %s error: %s", type(f).__name__, e
                 )
