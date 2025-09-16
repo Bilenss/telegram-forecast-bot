@@ -1,1 +1,1 @@
-worker: python -m app.main
+worker: PYTHONPATH=. python test_fetcher.py
