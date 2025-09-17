@@ -16,10 +16,10 @@ class FastPredictionEngine:
         self.last_analysis = {}
     
     async def get_fast_prediction(self, 
-                                 pair: str, 
-                                 timeframe: str,
-                                 df: pd.DataFrame,
-                                 mode: str = "ind") -> Tuple[str, Dict[str, Any]]:
+                                  pair: str, 
+                                  timeframe: str,
+                                  df: pd.DataFrame,
+                                  mode: str = "ind") -> Tuple[str, Dict[str, Any]]:
         """
         Быстрый прогноз за 5-10 секунд
         
@@ -28,6 +28,11 @@ class FastPredictionEngine:
         """
         start_time = datetime.now()
         
+        # Проверка на пустой DataFrame
+        if df.empty:
+            logger.warning("Received empty DataFrame for analysis. Returning fallback.")
+            return self._get_fallback_prediction(timeframe), {}
+
         try:
             # Параллельный анализ
             tasks = []
@@ -95,8 +100,11 @@ class FastPredictionEngine:
         
         try:
             # Быстрые вычисления основных индикаторов
-            close = df['close'].values
-            
+            # Добавьте проверку, чтобы избежать KeyError, если столбцы не существуют
+            close = df.get('close', pd.Series()).values
+            if not close.size:
+                return {}
+
             # RSI (упрощенный)
             rsi = self._calculate_rsi_fast(close)
             
@@ -125,6 +133,9 @@ class FastPredictionEngine:
         await asyncio.sleep(0.1)
         
         try:
+            if df.empty or len(df) < 2:
+                return {'pattern': 'NEUTRAL', 'strength': 50}
+
             # Упрощенный поиск основных паттернов
             last_candles = df.tail(5)
             
@@ -141,11 +152,11 @@ class FastPredictionEngine:
                 pattern = "SHOOTING_STAR"
                 strength = 30
             # Бычье поглощение
-            elif self._is_bullish_engulfing(last_candles.iloc[-2:]):
+            elif len(last_candles) >= 2 and self._is_bullish_engulfing(last_candles.iloc[-2:]):
                 pattern = "BULLISH_ENGULFING"
                 strength = 80
             # Медвежье поглощение
-            elif self._is_bearish_engulfing(last_candles.iloc[-2:]):
+            elif len(last_candles) >= 2 and self._is_bearish_engulfing(last_candles.iloc[-2:]):
                 pattern = "BEARISH_ENGULFING"
                 strength = 20
             
@@ -162,7 +173,7 @@ class FastPredictionEngine:
         await asyncio.sleep(0.1)
         
         try:
-            if 'volume' in df.columns:
+            if 'volume' in df.columns and not df.empty:
                 avg_volume = df['volume'].mean()
                 last_volume = df['volume'].iloc[-1]
                 volume_ratio = last_volume / avg_volume if avg_volume > 0 else 1
@@ -182,13 +193,16 @@ class FastPredictionEngine:
         await asyncio.sleep(0.1)
         
         try:
-            close = df['close'].values
-            high = df['high'].values
-            low = df['low'].values
+            close = df.get('close', pd.Series()).values
+            high = df.get('high', pd.Series()).values
+            low = df.get('low', pd.Series()).values
             
+            if not close.size or len(close) < 20:
+                return {'signal': 'HOLD'}
+
             # Определяем тренд
             sma_20 = pd.Series(close).rolling(20).mean().iloc[-1]
-            sma_50 = pd.Series(close).rolling(50).mean().iloc[-1] if len(close) > 50 else sma_20
+            sma_50 = pd.Series(close).rolling(50).mean().iloc[-1] if len(close) >= 50 else sma_20
             
             current_price = close[-1]
             
@@ -224,10 +238,13 @@ class FastPredictionEngine:
         await asyncio.sleep(0.1)
         
         try:
-            high = df['high'].values
-            low = df['low'].values
-            close = df['close'].values
+            high = df.get('high', pd.Series()).values
+            low = df.get('low', pd.Series()).values
+            close = df.get('close', pd.Series()).values
             
+            if not high.size or len(high) < 20:
+                return {}
+
             # Простой метод: последние экстремумы
             resistance = max(high[-20:]) if len(high) > 20 else max(high)
             support = min(low[-20:]) if len(low) > 20 else min(low)
@@ -246,6 +263,8 @@ class FastPredictionEngine:
     def _calculate_rsi_fast(self, prices, period=14):
         """Упрощенный расчет RSI"""
         try:
+            if len(prices) < period:
+                return 50 # Недостаточно данных
             deltas = pd.Series(prices).diff()
             gain = deltas.where(deltas > 0, 0).rolling(period).mean()
             loss = -deltas.where(deltas < 0, 0).rolling(period).mean()
