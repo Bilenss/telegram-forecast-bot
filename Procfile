@@ -1,1 +1,1 @@
-worker: PYTHONPATH=. python test_fetcher.py
+worker: PYTHONPATH=. python main.py
