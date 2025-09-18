@@ -7,7 +7,7 @@ from ..config import (
     PO_USE_OCR,
     PO_USE_WS_FETCHER,
 )
-from .ws_fetcher import WebSocketWrapper
+from .ws_fetcher import WebSocketFetcher # <--- Исправлено для импорта WebSocketFetcher
 from .pocketoption_scraper import fetch_po_ohlc_async
 from .po_interceptor import PocketOptionInterceptor
 from .po_screenshot_ocr import ScreenshotAnalyzer
@@ -33,20 +33,16 @@ class OCRFetcher:
         df = await self._o.capture_and_analyze(symbol, timeframe, otc)
         return df, "ocr"
 
-class WebSocketWrapper:
-    def __init__(self):
-        self._w = WebSocketFetcher()
-    async def fetch(self, symbol: str, timeframe: str, otc: bool=False):
-        df = await self._w.fetch(symbol, timeframe, otc)
-        return df, "ws"
+# Класс WebSocketWrapper был ошибочным и теперь удален, так как он не нужен.
+# Теперь мы напрямую используем WebSocketFetcher.
 
 class CompositeFetcher:
     def __init__(self):
         providers = {
-            "ws":         WebSocketWrapper(),
-            "po":         PocketOptionFetcher(),
+            "ws": WebSocketFetcher(), # <--- Исправлено для использования WebSocketFetcher
+            "po": PocketOptionFetcher(),
             "interceptor": InterceptorFetcher(),
-            "ocr":        OCRFetcher(),
+            "ocr": OCRFetcher(),
         }
         order = []
         if PO_USE_WS_FETCHER:
