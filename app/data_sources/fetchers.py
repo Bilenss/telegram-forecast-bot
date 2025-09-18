@@ -7,7 +7,7 @@ from ..config import (
     PO_USE_OCR,
     PO_USE_WS_FETCHER,
 )
-from .ws_fetcher import WebSocketFetcher
+from .ws_fetcher import WebSocketWrapper
 from .pocketoption_scraper import fetch_po_ohlc_async
 from .po_interceptor import PocketOptionInterceptor
 from .po_screenshot_ocr import ScreenshotAnalyzer
