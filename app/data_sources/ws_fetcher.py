@@ -1,3 +1,4 @@
+# app/data_sources/ws_fetcher.py
 import asyncio
 import logging
 import httpx
@@ -8,9 +9,6 @@ from ..config import PO_WS_URL, PO_ENTRY_URL
 logger = logging.getLogger(__name__)
 
 class WebSocketFetcher:
-    """
-    Fetches real-time market data from PocketOption's WebSocket.
-    """
     def __init__(self):
         self.sio = socketio.AsyncClient(reconnection=True, logger=False, engineio_logger=False)
         self.url = PO_WS_URL

@@ -1,3 +1,4 @@
+# app/data_sources/fetchers.py
 import logging
 import pandas as pd
 from ..config import (
@@ -32,13 +33,20 @@ class OCRFetcher:
         df = await self._o.capture_and_analyze(symbol, timeframe, otc)
         return df, "ocr"
 
+class WebSocketWrapper:
+    def __init__(self):
+        self._w = WebSocketFetcher()
+    async def fetch(self, symbol: str, timeframe: str, otc: bool=False):
+        df = await self._w.fetch(symbol, timeframe, otc)
+        return df, "ws"
+
 class CompositeFetcher:
     def __init__(self):
         providers = {
-            "ws": WebSocketFetcher(), 
-            "po": PocketOptionFetcher(),
+            "ws":         WebSocketWrapper(),
+            "po":         PocketOptionFetcher(),
             "interceptor": InterceptorFetcher(),
-            "ocr": OCRFetcher(),
+            "ocr":        OCRFetcher(),
         }
         order = []
         if PO_USE_WS_FETCHER:
