@@ -1,4 +1,3 @@
-# app/data_sources/fetchers.py
 import logging
 import pandas as pd
 from ..config import (
@@ -7,7 +6,7 @@ from ..config import (
     PO_USE_OCR,
     PO_USE_WS_FETCHER,
 )
-from .ws_fetcher import WebSocketFetcher # <--- Исправлено для импорта WebSocketFetcher
+from .ws_fetcher import WebSocketFetcher
 from .pocketoption_scraper import fetch_po_ohlc_async
 from .po_interceptor import PocketOptionInterceptor
 from .po_screenshot_ocr import ScreenshotAnalyzer
@@ -33,13 +32,10 @@ class OCRFetcher:
         df = await self._o.capture_and_analyze(symbol, timeframe, otc)
         return df, "ocr"
 
-# Класс WebSocketWrapper был ошибочным и теперь удален, так как он не нужен.
-# Теперь мы напрямую используем WebSocketFetcher.
-
 class CompositeFetcher:
     def __init__(self):
         providers = {
-            "ws": WebSocketFetcher(), # <--- Исправлено для использования WebSocketFetcher
+            "ws": WebSocketFetcher(), 
             "po": PocketOptionFetcher(),
             "interceptor": InterceptorFetcher(),
             "ocr": OCRFetcher(),
