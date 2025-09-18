@@ -5,4 +5,5 @@ pandas==2.0.3
 playwright==1.36.0
 loguru==0.7.2
 httpx==0.24.1
-socketio==5.10.1
+python-socketio==5.11.0
+python-engineio==4.10.0
